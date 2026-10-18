@@ -1,0 +1,5570 @@
+<!DOCTYPE html>
+<!-- 冰箱盲盒大厨 —— 第 6 段：通过自己的后端服务器调用 API（拍照识别 + 菜谱匹配） -->
+<!-- 重要：这个页面现在必须配合 server.js 一起用，不能直接双击打开。
+     启动方法：在本程序目录执行  node server.js
+     然后浏览器打开：http://localhost:3000 -->
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <!-- 让手机浏览器按真实宽度显示，不要在手机上被缩小 -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>冰箱盲盒大厨</title>
+
+  <style>
+    /* ============================================================
+       一、全局变量（改颜色只要改这里，全站一起变）
+       ============================================================ */
+    :root {
+      --bg: #f3f4f6;              /* 页面背景：淡灰 */
+      --card-bg: #ffffff;         /* 卡片背景：白色 */
+      --text: #1f2937;            /* 主要文字颜色 */
+      --text-muted: #9ca3af;      /* 次要/提示文字颜色（灰色） */
+      --border: #e5e7eb;          /* 描边颜色 */
+      --primary: #ff7a45;         /* 主色：暖橙色，有食欲 */
+      --primary-dark: #e8632c;    /* 主色加深，用于悬停 */
+      --radius: 16px;             /* 统一圆角大小 */
+      --shadow: 0 2px 10px rgba(0, 0, 0, 0.06);   /* 轻微阴影 */
+      --shadow-hover: 0 6px 18px rgba(0, 0, 0, 0.12); /* 悬停时阴影更明显 */
+    }
+
+    /* ============================================================
+       二、基础重置：把浏览器默认的边距清掉，方便自己控制
+       ============================================================ */
+    * {
+      box-sizing: border-box;     /* 让 padding 和 border 算在宽度里，排版更直观 */
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      /* 系统默认字体，中文优先用微软雅黑 / 苹方 */
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
+                   "Microsoft YaHei", "PingFang SC", "Helvetica Neue", Arial, sans-serif;
+      font-size: 16px;            /* 舒适的字号 */
+      line-height: 1.6;
+      color: var(--text);
+      background: var(--bg);
+      padding: 24px 16px 48px;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ============================================================
+       三、顶部标题
+       ============================================================ */
+    .page-header {
+      max-width: 1100px;          /* 内容最宽 1100px，屏幕再宽也不会拉散 */
+      margin: 0 auto 24px;
+      text-align: center;
+    }
+
+    .page-header h1 {
+      font-size: 30px;
+      letter-spacing: 2px;
+    }
+
+    .page-header .subtitle {
+      margin-top: 4px;
+      font-size: 14px;
+      color: var(--text-muted);
+    }
+
+    /* ============================================================
+       四、整体布局：电脑左右分栏，手机上下排列
+       ============================================================ */
+    .layout {
+      max-width: 1100px;
+      margin: 0 auto;
+      display: grid;
+      /* 左栏稍宽（放识别区 + 输入区），右栏放菜谱 */
+      grid-template-columns: 1.15fr 1fr;
+      gap: 20px;
+      align-items: start;         /* 两栏顶部对齐，不被拉成一样高 */
+    }
+
+    /* 左栏内部：两个卡片上下堆叠 */
+    .left-column {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+      min-width: 0;               /* 防止内容把栅格撑破 */
+    }
+
+    /* 屏幕宽度小于 860px（手机、竖屏平板）时，改成上下排列 */
+    @media (max-width: 860px) {
+      .layout {
+        grid-template-columns: 1fr;
+      }
+      .page-header h1 {
+        font-size: 24px;
+      }
+    }
+
+    /* ============================================================
+       五、卡片（白色圆角 + 轻微阴影）
+       ============================================================ */
+    .card {
+      background: var(--card-bg);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 20px;
+      transition: box-shadow 0.2s ease;
+    }
+
+    .card:hover {
+      box-shadow: var(--shadow-hover);
+    }
+
+    .card-title {
+      font-size: 17px;
+      margin-bottom: 14px;
+    }
+
+    /* 卡片内的小标题，例如“已添加食材” */
+    .section-label {
+      font-size: 14px;
+      color: var(--text-muted);
+      font-weight: 600;
+      margin: 18px 0 10px;
+    }
+
+    /* ============================================================
+       六、摄像头预览框
+       ============================================================ */
+    .camera-box {
+      position: relative;         /* 给里面的 video / 提示文字当定位基准 */
+      width: 100%;
+      aspect-ratio: 4 / 3;        /* 保持 4:3 的矩形比例 */
+      background: #e8eaed;        /* 灰色占位 */
+      border: 2px dashed #cfd4da; /* 虚线边框，暗示“这里是画面” */
+      border-radius: 12px;
+      overflow: hidden;           /* 让画面被圆角裁切 */
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--text-muted);
+      font-size: 15px;
+      letter-spacing: 1px;
+      margin-bottom: 14px;
+    }
+
+    /* 摄像头画面：默认藏起来，开了摄像头才显示 */
+    #cameraVideo {
+      display: none;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;          /* 画面铺满方框，不拉伸变形 */
+    }
+
+    /* 摄像头开启后：方框变成实线黑边，画面顶上来，提示文字让位 */
+    .camera-box.streaming {
+      background: #000;
+      border-style: solid;
+      border-color: #1f2937;
+    }
+
+    .camera-box.streaming #cameraVideo {
+      display: block;
+    }
+
+    .camera-box.streaming .camera-hint {
+      display: none;
+    }
+
+    /* ============================================================
+       七、按钮
+       ============================================================ */
+    .btn {
+      font-family: inherit;
+      font-size: 15px;
+      padding: 11px 20px;
+      border: none;
+      border-radius: 10px;
+      cursor: pointer;
+      transition: background 0.2s ease, transform 0.1s ease, box-shadow 0.2s ease;
+    }
+
+    .btn-primary {
+      background: var(--primary);
+      color: #fff;
+      font-weight: 600;
+    }
+
+    /* 悬停：颜色加深 + 轻微上浮 + 阴影
+       （:not(:disabled) 保证「思考中…」这种禁用状态下不会再有悬停反应） */
+    .btn-primary:hover:not(:disabled) {
+      background: var(--primary-dark);
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(255, 122, 69, 0.35);
+    }
+
+    /* 按下：回落，给出“按到了”的手感 */
+    .btn-primary:active:not(:disabled) {
+      transform: translateY(0);
+      box-shadow: none;
+    }
+
+    /* 禁用状态：变淡 + 鼠标变成“禁止”，明确告诉用户现在不能再点 */
+    .btn:disabled {
+      opacity: 0.65;
+      cursor: not-allowed;
+      transform: none;
+      box-shadow: none;
+    }
+
+    /* 键盘 Tab 选中时显示轮廓，方便无障碍操作 */
+    .btn:focus-visible {
+      outline: 2px solid var(--primary);
+      outline-offset: 2px;
+    }
+
+    /* 识别按钮独占一行，宽度撑满 */
+    .btn-block {
+      display: block;
+      width: 100%;
+    }
+
+    /* 次要按钮：白底描边，用来放“关闭摄像头”这种非主流程的操作，
+       免得抢了橙色主按钮的注意力 */
+    .btn-secondary {
+      background: #fff;
+      color: #374151;
+      border: 1px solid var(--border);
+      font-weight: 600;
+      /* 上面加了 1px 边框，这里减掉 1px，让两种按钮高度看起来一样 */
+      padding: 10px 20px;
+    }
+
+    .btn-secondary:hover:not(:disabled) {
+      background: #f9fafb;
+      border-color: #d1d5db;
+    }
+
+    /* 【⛔ 关闭摄像头】按钮：在识别按钮上方留一点间距 */
+    .btn-close-camera {
+      margin-bottom: 10px;
+    }
+
+    /* 带 hidden 属性的按钮必须真的藏起来。
+       上面 .btn-block 里的 display:block 会把浏览器默认的 [hidden] 规则盖掉，
+       所以这里专门再写一条，否则“默认隐藏”会失效。 */
+    .btn-block[hidden] {
+      display: none;
+    }
+
+    /* ============================================================
+       八、食材输入区
+       ============================================================ */
+    .input-row {
+      display: flex;
+      gap: 10px;
+    }
+
+    .input-row input {
+      flex: 1;                    /* 输入框占据剩余空间 */
+      min-width: 0;
+      font-family: inherit;
+      font-size: 15px;
+      padding: 11px 14px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: #fafafa;
+      color: var(--text);
+      transition: border-color 0.2s ease, background 0.2s ease;
+    }
+
+    .input-row input::placeholder {
+      color: var(--text-muted);
+    }
+
+    .input-row input:focus {
+      outline: none;
+      background: #fff;
+      border-color: var(--primary);
+    }
+
+    /* --- 常用食材快捷标签 --- */
+    .quick-tags {
+      display: flex;
+      flex-wrap: wrap;            /* 一行放不下就自动换行 */
+      gap: 8px;
+      margin-top: 14px;
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-family: inherit;
+      font-size: 14px;
+      padding: 6px 12px;
+      border: 1px solid var(--border);
+      border-radius: 999px;       /* 大圆角 = 胶囊形状 */
+      background: #fff;
+      color: var(--text);
+      cursor: pointer;
+      transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+    }
+
+    .tag:hover {
+      background: #fff4ef;
+      border-color: var(--primary);
+      color: var(--primary-dark);
+    }
+
+    /* 标签后面的小“+” */
+    .tag-plus {
+      font-weight: 700;
+      color: var(--primary);
+    }
+
+    /* --- 已添加食材展示区 --- */
+    .ingredient-list {
+      min-height: 56px;
+      border: 1px dashed var(--border);
+      border-radius: 12px;
+      padding: 12px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+
+    /* --- 已添加食材的小标签（第 2 段由 JS 动态生成） --- */
+    .ingredient-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 14px;
+      padding: 6px 8px 6px 12px;
+      border-radius: 999px;
+      background: #fff4ef;
+      border: 1px solid #ffd9c7;
+      color: var(--primary-dark);
+    }
+
+    /* 标签上的「×」删除按钮 */
+    .chip-remove {
+      font-family: inherit;
+      font-size: 16px;
+      line-height: 1;
+      width: 20px;
+      height: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: none;
+      border-radius: 50%;
+      background: transparent;
+      color: var(--primary);
+      cursor: pointer;
+      transition: background 0.15s ease, color 0.15s ease;
+    }
+
+    .chip-remove:hover {
+      background: var(--primary);
+      color: #fff;
+    }
+
+    /* 「✨ 匹配菜谱」按钮：和已添加食材区留出间距 */
+    .btn-match {
+      margin-top: 16px;
+    }
+
+    /* --- “我家有基础调料”勾选项（第 5 段新增） --- */
+    .seasoning-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 16px;
+      font-size: 14px;
+      color: #374151;
+      cursor: pointer;            /* 点文字也能勾选，不用非得点中小方块 */
+      user-select: none;          /* 连点两下不会选中文字 */
+    }
+
+    /* 复选框本体：调大一点，手机上更好点 */
+    .seasoning-row input[type="checkbox"] {
+      width: 17px;
+      height: 17px;
+      accent-color: var(--primary);   /* 勾选后的颜色跟着主色走 */
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+
+    /* 后面那句解释性的浅灰小字 */
+    .seasoning-row .seasoning-hint {
+      color: var(--text-muted);
+      font-size: 13px;
+    }
+
+    /* 灰色提示文字（暂无食材 / 暂无推荐都用它） */
+    .placeholder-text {
+      color: var(--text-muted);
+      font-size: 14px;
+      width: 100%;
+      text-align: center;
+      padding: 6px 0;
+    }
+
+    /* ============================================================
+       九、菜谱展示区
+       ============================================================ */
+    .recipe-card {
+      min-height: 320px;
+    }
+
+    .recipe-list {
+      min-height: 240px;
+      border: 1px dashed var(--border);
+      border-radius: 12px;
+      padding: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    /* 有菜谱时：从“居中一句提示”换成从上往下排菜谱卡片 */
+    .recipe-list.filled {
+      display: block;
+    }
+
+    /* --- 单张菜谱卡片（由 JS 动态生成） ---
+       折叠状态下的结构：
+         .recipe-item-title        菜名（第一行）
+         .recipe-item-ingredients  用料（第二行）
+         .recipe-toggle            折叠角标 👇 查看步骤
+         .recipe-steps             步骤（默认藏起来，点角标才展开）
+       ============================================================ */
+    .recipe-item {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px 14px;
+      margin-bottom: 10px;
+      background: #fffdfb;
+    }
+
+    .recipe-item:last-child {
+      margin-bottom: 0;
+    }
+
+    .recipe-item-title {
+      font-size: 15.5px;
+      margin-bottom: 4px;
+    }
+
+    /* 食材提示灰字：在菜名下方显示具体食材建议 */
+    .recipe-item-hint {
+      font-size: 11px;
+      line-height: 1.4;
+      color: #999;
+      margin-top: 3px;
+      margin-bottom: 6px;
+    }
+
+    /* 用料那一行：菜名下面单独一行，用顿号连起来，不占太多高度 */
+    .recipe-item-ingredients {
+      font-size: 13.5px;
+      line-height: 1.6;
+      color: #374151;
+    }
+
+    /* 「用料：」这几个字用主色，和后面的内容区分开 */
+    .recipe-item-ingredients .ing-label {
+      color: var(--primary-dark);
+      font-weight: 600;
+    }
+
+    /* 解锁出来的菜，额外标一行「还需购买：xxx」 */
+    .recipe-item-need {
+      font-size: 13px;
+      line-height: 1.6;
+      color: var(--primary-dark);
+      background: #fff4ef;
+      border-radius: 8px;
+      padding: 4px 8px;
+      margin-top: 6px;
+    }
+
+    /* --- 菜名那一行：左边菜名，右边「难易标签 + 星星」 ---
+       用 flex 把两边顶到卡片两端。菜名太长时允许换行，
+       免得把右边的标签挤出卡片外面。 */
+    .recipe-item-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;              /* 窄屏上标签自动换到下一行 */
+      gap: 4px 8px;
+      margin-bottom: 4px;
+    }
+
+    /* 菜名本体。它原本有 margin-bottom，进了这一行就交给父元素统一管间距。
+       min-width: 0 是关键的保险：没有它，长菜名会把右边的标签挤出去 */
+    .recipe-item-head .recipe-item-title {
+      margin-bottom: 0;
+      min-width: 0;
+      flex: 1 1 auto;
+    }
+
+    /* 右边那组（标签 + 星星），不许被压扁、也不许内部换行 */
+    .recipe-item-meta {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex: 0 0 auto;
+      white-space: nowrap;
+    }
+
+    /* 难易程度标签：淡淡的背景色 + 同色系深一点的字，三种难度三种配色 */
+    .difficulty-tag {
+      font-size: 12px;
+      font-weight: 600;
+      line-height: 1.5;
+      padding: 1px 8px;
+      border-radius: 999px;
+    }
+
+    .difficulty-easy {
+      color: #15803d;
+      background: #e8f7ee;          /* 淡绿 */
+    }
+
+    .difficulty-medium {
+      color: #b45309;
+      background: #fdf3e3;          /* 淡橙 */
+    }
+
+    .difficulty-hard {
+      color: #b91c1c;
+      background: #fdecec;          /* 淡红 */
+    }
+
+    /* 五颗星。空的星星是浅灰，亮的星星是金黄色 */
+    .recipe-stars {
+      font-size: 13px;
+      letter-spacing: 1px;
+      color: #d1d5db;               /* 空星的颜色 */
+      cursor: help;                 /* 鼠标移上去变成问号，提示这里能看评分依据 */
+    }
+
+    .recipe-stars .stars-filled {
+      color: #f5a623;               /* 黄色星星 */
+    }
+
+    /* 折叠角标：做成一个通栏的小方块，好点、也好看 */
+    .recipe-toggle {
+      display: block;
+      width: 100%;
+      margin-top: 8px;
+      padding: 5px 0;
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--primary-dark);
+      background: #fff4ef;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background 0.18s ease;
+    }
+
+    .recipe-toggle:hover {
+      background: #ffe6d9;
+    }
+
+    .recipe-toggle:focus-visible {
+      outline: 2px solid var(--primary);
+      outline-offset: 2px;
+    }
+
+    /* 步骤区：默认是收起来的（display:none），点角标才展开 */
+    .recipe-steps {
+      display: none;
+      margin-top: 6px;
+      padding-top: 8px;
+      border-top: 1px dashed var(--border);
+    }
+
+    .recipe-steps.open {
+      display: block;
+    }
+
+    /* 展开时才出现的那几个部分（步骤小标题 + 有序列表） */
+    .recipe-steps ol {
+      margin: 0;
+      padding-left: 20px;         /* 给列表前面的序号留位置 */
+    }
+
+    .recipe-steps li {
+      font-size: 13.5px;
+      line-height: 1.65;
+      color: #374151;
+      margin-bottom: 3px;
+    }
+
+    /* 「步骤」这两个字的小标题 */
+    .recipe-steps-label {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--primary-dark);
+      margin-bottom: 4px;
+    }
+
+    /* --- 第二个菜谱区：额外购买食材后能做 --- */
+    .extra-recipe-section {
+      margin-top: 20px;
+      padding-top: 18px;
+      border-top: 1px solid var(--border);
+      display: block;
+    }
+
+    /* 老规矩：上面设了 display，就得自己补一条 [hidden]，否则藏不起来 */
+    .extra-recipe-section[hidden] {
+      display: none;
+    }
+
+    .recipe-section-title {
+      font-size: 16px;
+      margin-bottom: 12px;
+    }
+
+    /* 第二栏的容器不需要第一栏那么大的最小高度（它一出现就必定有内容） */
+    #extraRecipeList {
+      min-height: 0;
+    }
+
+    /* 「用料」「步骤」这种小标题 */
+    .recipe-block-label {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--primary-dark);
+      margin: 8px 0 4px;
+    }
+
+    .recipe-item ul,
+    .recipe-item ol {
+      margin: 0;
+      padding-left: 20px;         /* 给列表前面的序号/圆点留位置 */
+    }
+
+    .recipe-item li {
+      font-size: 14px;
+      color: #374151;
+      margin-bottom: 2px;
+    }
+
+    /* ============================================================
+       十、自定义模态框（摄像头权限说明 / 权限被拒提示）
+       ------------------------------------------------------------
+       用网页自己的框代替浏览器原生的 confirm/alert，外观和卡片保持一致。
+       整个框由三层组成：
+         .modal-overlay  半透明黑底，铺满全屏，负责挡住下面的页面
+         .modal-card     白色的卡片本体
+         .modal-actions  底部按钮那一行
+       ============================================================ */
+    .modal-overlay {
+      position: fixed;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      left: 0;                       /* 四条边都贴住屏幕 */
+      background: rgba(17, 24, 39, 0.45);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      z-index: 100;                  /* 盖在页面所有内容上面 */
+      animation: modal-fade 0.18s ease;
+    }
+
+    /* 又是同一个坑：上面写了 display:flex，会盖掉浏览器对 [hidden] 的默认隐藏，
+       所以这里必须再补一条，否则“默认藏起来”会失效、框会一直显示着 */
+    .modal-overlay[hidden] {
+      display: none;
+    }
+
+    @keyframes modal-fade {
+      from { opacity: 0; }
+      to   { opacity: 1; }
+    }
+
+    .modal-card {
+      background: var(--card-bg);
+      border-radius: var(--radius);
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
+      padding: 24px;
+      width: 100%;
+      max-width: 420px;              /* 电脑上不至于拉得太宽 */
+      animation: modal-pop 0.2s ease;
+    }
+
+    @keyframes modal-pop {
+      from { transform: translateY(8px) scale(0.98); opacity: 0; }
+      to   { transform: none; opacity: 1; }
+    }
+
+    .modal-title {
+      font-size: 17px;
+      margin-bottom: 10px;
+    }
+
+    .modal-text {
+      font-size: 14.5px;
+      line-height: 1.7;
+      color: #374151;
+      margin-bottom: 20px;
+    }
+
+    .modal-actions {
+      display: flex;
+      gap: 10px;
+      justify-content: flex-end;
+    }
+
+    /* 手机窄屏上按钮并排会挤，改成竖着排、每个占满一行 */
+    @media (max-width: 420px) {
+      .modal-actions {
+        flex-direction: column-reverse;   /* 主按钮在上，符合手机上的习惯 */
+      }
+      .modal-actions .btn {
+        width: 100%;
+      }
+    }
+
+    /* 只留一个按钮时（比如“权限被拒”的提示），把取消按钮藏起来。
+       同样要自己写一条，免得被别处的 display 规则盖掉 */
+    .modal-actions .btn[hidden] {
+      display: none;
+    }
+
+    /* ============================================================
+       十一、菜谱下方的操作区（🔄 换一批 / 额外食材解锁）
+       ============================================================ */
+    .recipe-actions {
+      margin-top: 16px;
+    }
+
+    /* 又是那个坑：下面这些元素都设了 display，会盖掉 [hidden] 的默认隐藏，
+       所以每一类都得自己补一条 [hidden] 规则，否则“默认藏起来”会失效 */
+    .recipe-actions[hidden],
+    .extra-box[hidden],
+    .extra-hint[hidden],
+    .extra-status[hidden] {
+      display: none;
+    }
+
+    /* 「换一批」和「解锁区」之间用一条虚线隔开，视觉上分个组 */
+    .extra-box {
+      margin-top: 18px;
+      padding-top: 16px;
+      border-top: 1px dashed var(--border);
+      display: block;
+    }
+
+    /* ≤5 道菜时的那句解释文字 */
+    .extra-hint {
+      font-size: 13.5px;
+      line-height: 1.75;
+      color: var(--text-muted);
+      margin-bottom: 12px;
+      display: block;
+    }
+
+    /* 解锁输入框下面那句固定的小灰字（一直显示，不参与任何显隐切换） */
+    .extra-note {
+      display: block;
+      font-size: 12.5px;
+      line-height: 1.65;
+      color: var(--text-muted);
+      margin: -4px 0 10px;      /* 上边收紧一点，让它紧跟着上面的输入框 */
+    }
+
+    .extra-count-input {
+      display: block;
+      width: 100%;
+      font-family: inherit;
+      font-size: 14px;
+      padding: 10px 14px;
+      margin-bottom: 10px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: #fafafa;
+      color: var(--text);
+      transition: border-color 0.2s ease, background 0.2s ease;
+    }
+
+    .extra-count-input:focus {
+      outline: none;
+      background: #fff;
+      border-color: var(--primary);
+    }
+
+    .extra-count-input:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    /* 解锁结果那一行小字（例如“本批需额外购买：土豆、青椒”） */
+    .extra-status {
+      display: block;
+      font-size: 13px;
+      line-height: 1.6;
+      color: var(--primary-dark);
+      margin-top: 10px;
+      text-align: center;
+    }
+
+    /* ============================================================
+       十二、管理员系统（连点顶部标题 5 次唤出）
+       ------------------------------------------------------------
+       设置弹层和上面的 .modal-overlay 是同一套做法：
+         #adminPanelOverlay    设置面板（API Key / 模型 / 每日上限）
+       老规矩：下面写了 display:flex，就必须自己再补一条 [hidden] 规则，
+       否则「默认藏起来」会被 display 盖掉，框会一直显示在屏幕上。
+       ============================================================ */
+    .admin-overlay {
+      position: fixed;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      left: 0;                       /* 四条边贴满屏幕，挡住下面的页面 */
+      background: rgba(17, 24, 39, 0.5);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      z-index: 200;                  /* 比普通弹窗(100)更高，保证压在最上面 */
+      animation: modal-fade 0.18s ease;
+    }
+
+    .admin-overlay[hidden] {
+      display: none;
+    }
+
+    .admin-card {
+      background: var(--card-bg);
+      border-radius: var(--radius);
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.2);
+      padding: 24px;
+      width: 100%;
+      max-width: 460px;
+      max-height: 90vh;              /* 手机上内容多时可以滚，不会顶出屏幕 */
+      overflow-y: auto;
+      animation: modal-pop 0.2s ease;
+    }
+
+    /* 一个字段 = 一行标签 + 一个输入框 + 一行小字说明 */
+    .admin-field {
+      margin-bottom: 18px;
+    }
+
+    .admin-label {
+      display: block;
+      font-size: 13.5px;
+      font-weight: 600;
+      color: var(--primary-dark);
+      margin-bottom: 6px;
+    }
+
+    .admin-input {
+      display: block;
+      width: 100%;
+      font-family: inherit;
+      font-size: 14px;
+      padding: 10px 14px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: #fafafa;
+      color: var(--text);
+      transition: border-color 0.2s ease, background 0.2s ease;
+    }
+
+    .admin-input:focus {
+      outline: none;
+      background: #fff;
+      border-color: var(--primary);
+    }
+
+    /* 下拉框各浏览器自带的外观差很多，这里统一成和输入框一样的样式 */
+    .admin-select {
+      cursor: pointer;
+    }
+
+    .admin-hint {
+      font-size: 12.5px;
+      line-height: 1.65;
+      color: var(--text-muted);
+      margin-top: 6px;
+    }
+
+    /* 面板顶部那行「今天已调用 N 次 / 上限 M 次」 */
+    .admin-status {
+      font-size: 13px;
+      line-height: 1.6;
+      color: var(--primary-dark);
+      background: #fff7f2;
+      border: 1px solid #ffe3d5;
+      border-radius: 10px;
+      padding: 10px 12px;
+      margin-bottom: 18px;
+      word-break: break-all;
+    }
+
+    .admin-actions {
+      display: flex;
+      gap: 10px;
+      justify-content: flex-end;
+      margin-top: 4px;
+    }
+
+    /* 手机上三个按钮并排会挤，改成竖着排、每个占满一行 */
+    @media (max-width: 420px) {
+      .admin-actions {
+        flex-direction: column-reverse;
+      }
+      .admin-actions .btn {
+        width: 100%;
+      }
+    }
+
+    .admin-actions .btn[hidden] {
+      display: none;
+    }
+
+    /* ============================================================
+       十三、星级筛选器（右侧「推荐菜谱」上方那条小板块）
+       ------------------------------------------------------------
+       一共四个零件，从上到下：标题 + 状态、星星条、灰色说明、确定按钮。
+       刻意做得很扁：星星 21px、说明 11.5px、按钮只占右边一小块，
+       不要让它看起来比菜谱本身还抢眼。
+       ============================================================ */
+    .star-filter {
+      display: block;                 /* 不用 flex，免得 [hidden] 被盖掉 */
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: #fffdfb;
+      padding: 10px 12px;
+      margin-bottom: 12px;
+    }
+
+    .star-filter-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+
+    .star-filter-label {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--primary-dark);
+    }
+
+    /* 右边那句「未选择 / 最低 3 星」，一眼看出当前状态 */
+    .star-filter-state {
+      font-size: 12px;
+      color: var(--text-muted);
+      white-space: nowrap;
+    }
+
+    /* 星星条：一条长方形，里面 5 颗星星各占 1/5 宽。
+       等宽分配本身就是那几条「隐藏分界线」——
+       所以判断鼠标在第几颗，直接拿鼠标位置除以 1/5 就行，
+       不必非得点中星星本身，滑到哪里都算数。 */
+    .star-band {
+      display: flex;
+      align-items: center;
+      background: #f3f4f6;
+      border-radius: 8px;
+      padding: 2px 0;
+      cursor: pointer;
+      user-select: none;                /* 来回滑不会把星星文字拖成蓝色选中 */
+      -webkit-user-select: none;
+      touch-action: manipulation;       /* 手机上连点不会误触发双击缩放 */
+    }
+
+    .star-band:focus-visible {
+      outline: 2px solid var(--primary);
+      outline-offset: 2px;
+    }
+
+    .star-cell {
+      flex: 1 1 20%;                    /* ★ 每颗正好占 1/5 宽 ★ */
+      text-align: center;
+      font-size: 21px;
+      line-height: 1.25;
+      color: #d1d5db;                   /* 默认灰色 */
+      transition: color 0.12s ease;
+    }
+
+    /* 亮起来的那几颗 */
+    .star-cell.on {
+      color: #f5a623;
+    }
+
+    .star-filter-note {
+      font-size: 11.5px;
+      line-height: 1.6;
+      color: var(--text-muted);
+      margin-top: 8px;
+    }
+
+    /* 确定按钮只占右边一小块，不铺满整行 —— 这是「紧凑」的关键一笔 */
+    .star-filter-actions {
+      display: flex;
+      justify-content: flex-end;
+      margin-top: 8px;
+    }
+
+    .btn-star-apply {
+      padding: 7px 20px;
+      font-size: 13.5px;
+    }
+
+    /* ============================================================
+       十四、浮动提示 Toast（3 秒自动淡出，不用点任何按钮）
+       ------------------------------------------------------------
+       固定贴在屏幕底部中间，一串竖着排 —— 连着来好几条也不会互相压住。
+       z-index 比管理员弹层（200）还高，这样在设置面板里点保存也能看见提示。
+       pointer-events 的安排是关键：
+         容器本身 none  → 那一片透明区域不会挡住底下的按钮
+         每条 toast 自己 auto → 提示条本体还是可以被选中复制
+       ============================================================ */
+    .toast-container {
+      position: fixed;
+      left: 50%;
+      bottom: 28px;
+      transform: translateX(-50%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+      width: calc(100% - 32px);
+      max-width: 420px;              /* 别拉得太宽，长句子会自己折行 */
+      z-index: 300;
+      pointer-events: none;
+    }
+
+    .toast {
+      pointer-events: auto;
+      background: rgba(31, 41, 55, 0.94);
+      color: #fff;
+      font-size: 14px;
+      line-height: 1.6;
+      padding: 10px 16px;
+      border-radius: 10px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+      text-align: center;
+      word-break: break-word;        /* 长英文/长串能断开，不会撑出屏幕 */
+      opacity: 1;
+      transform: none;
+      transition: opacity 0.3s ease, transform 0.3s ease;
+      animation: toast-in 0.22s ease;
+    }
+
+    @keyframes toast-in {
+      from { opacity: 0; transform: translateY(10px); }
+      to   { opacity: 1; transform: none; }
+    }
+
+    /* 3 秒到点，加上这个类开始淡出；淡完由 JS 把元素整个删掉 */
+    .toast.toast-hide {
+      opacity: 0;
+      transform: translateY(-6px);
+    }
+
+    /* ============================================================
+       十六、备菜清单（右下角的悬浮小面板）
+       ------------------------------------------------------------
+       说明：整块是 position: fixed，脱离正常文档流 ——
+       这样做是为了「一个字都不用改现有布局」：main 还是那个两栏栅格，
+       悬浮面板浮在上面，不会把菜谱区挤变形。
+       ============================================================ */
+
+    /* 卡片上那个「加入备菜清单」勾选框 */
+    .prep-check {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      flex: 0 0 auto;               /* 不许被菜名压扁 */
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--text-muted);
+      cursor: pointer;
+      user-select: none;
+      white-space: nowrap;          /* 「加入备菜清单」六个字不拆行 */
+    }
+
+    .prep-check input[type="checkbox"] {
+      width: 15px;
+      height: 15px;
+      accent-color: var(--primary); /* 勾选后跟着主色走 */
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+
+    /* 勾上以后文字变主色加粗，一眼看出这张卡已经进清单了 */
+    .prep-check input:checked + span {
+      color: var(--primary-dark);
+      font-weight: 600;
+    }
+
+    .prep-panel {
+      position: fixed;
+      right: 18px;
+      bottom: 18px;
+      width: 300px;
+      max-width: calc(100vw - 36px);
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: 0 10px 34px rgba(0, 0, 0, 0.18);
+      z-index: 60;                  /* 盖在页面上，但低于模态框(100)和提示条(300) */
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;             /* 让圆角把里面的内容裁干净 */
+    }
+
+    /* 老规矩：上面设了 display，就得自己补一条 [hidden]，否则藏不起来 */
+    .prep-panel[hidden] {
+      display: none;
+    }
+
+    .prep-panel-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 10px 12px;
+      background: #fff4ef;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .prep-panel-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--primary-dark);
+    }
+
+    .prep-panel-count {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    /* 卡片列表。超过 3 道时由 JS 算好高度、这里负责滚 */
+    .prep-list {
+      padding: 8px;
+      overflow-y: auto;
+      overscroll-behavior: contain;  /* 滚到头不会把整页带着一起滚 */
+    }
+
+    .prep-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 6px;
+      padding: 6px 8px;
+      margin-bottom: 6px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: #fffdfb;
+      cursor: grab;                  /* 提示这东西能拖 */
+      user-select: none;
+      -webkit-user-select: none;
+    }
+
+    .prep-item:last-child {
+      margin-bottom: 0;
+    }
+
+    /* 正在拖动的那一张：描边变主色、加阴影，一眼看出「拿起来了」 */
+    .prep-item.prep-dragging {
+      cursor: grabbing;
+      border-color: var(--primary);
+      background: #fff8f4;
+      box-shadow: 0 6px 18px rgba(255, 122, 69, 0.28);
+    }
+
+    /* 左边的拖动把手。纯装饰，真正的手势是「长按整张卡」 */
+    .prep-grip {
+      flex: 0 0 auto;
+      font-size: 12px;
+      line-height: 1.6;
+      color: var(--text-muted);
+    }
+
+    .prep-body {
+      flex: 1 1 auto;
+      min-width: 0;                  /* 长菜名不会把右侧的叉号挤出去 */
+    }
+
+    .prep-name {
+      font-size: 12.5px;
+      font-weight: 600;
+      line-height: 1.45;
+      color: var(--text);
+    }
+
+    .prep-meta {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-top: 1px;
+    }
+
+    /* 紧凑版星星：比主卡片小两号 */
+    .prep-stars {
+      font-size: 11px;
+      letter-spacing: 0.5px;
+      color: #d1d5db;
+      cursor: help;
+    }
+
+    .prep-stars .stars-filled {
+      color: #f5a623;
+    }
+
+    /* 用料：小字、最多两行，超了就用省略号，保证卡片够扁 */
+    .prep-ing {
+      font-size: 11.5px;
+      line-height: 1.5;
+      color: var(--text-muted);
+      margin-top: 1px;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+
+    .prep-item-remove {
+      flex: 0 0 auto;
+      width: 18px;
+      height: 18px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: none;
+      border-radius: 50%;
+      background: transparent;
+      color: var(--text-muted);
+      font-family: inherit;
+      font-size: 14px;
+      line-height: 1;
+      cursor: pointer;
+      transition: background 0.15s ease, color 0.15s ease;
+    }
+
+    .prep-item-remove:hover {
+      background: var(--primary);
+      color: #fff;
+    }
+
+    .prep-hint {
+      font-size: 11.5px;
+      line-height: 1.55;
+      color: var(--text-muted);
+      text-align: center;
+      padding: 6px 10px 8px;
+      border-top: 1px dashed var(--border);
+    }
+
+    /* 人数输入区（备菜清单面板底部） */
+    .prep-people {
+      padding: 10px 12px;
+      border-top: 1px dashed var(--border);
+    }
+
+    .prep-people-label {
+      font-size: 12px;
+      color: var(--text);
+      margin-bottom: 8px;
+      font-weight: 600;
+    }
+
+    .prep-people-row {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 6px;
+    }
+
+    .prep-people-input {
+      flex: 1;
+      font-family: inherit;
+      font-size: 13px;
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #fafafa;
+      color: var(--text);
+      text-align: center;
+      transition: border-color 0.2s ease, background 0.2s ease;
+    }
+
+    .prep-people-input:focus {
+      outline: none;
+      background: #fff;
+      border-color: var(--primary);
+    }
+
+    /* 输入框校验错误：红框抖动动画 */
+    .prep-people-input.input-error-shake {
+      border-color: #ef4444;
+      animation: shake 0.6s ease-in-out;
+    }
+
+    @keyframes shake {
+      0%, 100% {
+        transform: translateX(0);
+      }
+      10%, 30%, 50%, 70%, 90% {
+        transform: translateX(-8px);
+      }
+      20%, 40%, 60%, 80% {
+        transform: translateX(8px);
+      }
+    }
+
+    .prep-people-input::placeholder {
+      color: var(--text-muted);
+    }
+
+    .prep-people-note {
+      font-size: 10.5px;
+      line-height: 1.5;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+
+    .btn-cook {
+      width: 100%;
+      font-size: 13px;
+      padding: 9px 16px;
+    }
+
+    /* 拖动期间给 body 挂个标记：抑制文字选中，免得拖一路蓝一片 */
+    body.prep-dragging-active {
+      user-select: none;
+      -webkit-user-select: none;
+    }
+
+    /* 窄屏（手机、竖屏平板）：面板贴着底部铺开，
+       不然 300px 宽的面板会把右边的菜谱盖掉大半 */
+    @media (max-width: 860px) {
+      .prep-panel {
+        left: 12px;
+        right: 12px;
+        bottom: 12px;
+        width: auto;
+        max-width: none;
+      }
+    }
+
+    /* ============================================================
+       十七、全屏教程覆盖层
+       ============================================================ */
+
+    /* 全屏覆盖层：盖住整个页面 */
+    .tutorial-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: #fff;
+      z-index: 9999;
+      overflow-y: auto;
+    }
+
+    /* 教程内容容器 */
+    .tutorial-content {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 40px 24px;
+      min-height: 100vh;
+    }
+
+    /* 加载中状态：全屏覆盖遮罩层，不占用文档流 */
+    .tutorial-loading {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #fff;
+      font-size: 18px;
+      color: var(--text-muted);
+      z-index: 10002;
+    }
+
+    /* 左上角返回按钮 */
+    .tutorial-back-home {
+      position: fixed;
+      top: 20px;
+      left: 20px;
+      font-size: 16px;
+      padding: 10px 20px;
+      background: var(--primary);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      z-index: 10001;
+      font-weight: 600;
+      transition: background 0.2s ease;
+    }
+
+    .tutorial-back-home:hover {
+      background: var(--primary-dark);
+    }
+
+    /* 菜名：左上角，整个UI最大字号 */
+    .tutorial-dish-name {
+      font-size: 32px;
+      font-weight: 700;
+      color: #000;
+      margin: 0 0 32px 0;
+      line-height: 1.3;
+    }
+
+    /* 第一道菜的全局提示：黑色加粗 */
+    .tutorial-global-info {
+      font-size: 16px;
+      font-weight: 700;
+      color: #000;
+      line-height: 1.8;
+      margin-bottom: 32px;
+      padding: 16px;
+      background: #f9fafb;
+      border-left: 4px solid var(--primary);
+      border-radius: 8px;
+    }
+
+    /* 步骤列表 */
+    .tutorial-steps {
+      margin-bottom: 60px;
+    }
+
+    /* 单个步骤 */
+    .tutorial-step {
+      margin-bottom: 20px;
+      line-height: 1.8;
+    }
+
+    /* 步骤文本：当前步骤加粗黑色，未执行的灰色 */
+    .tutorial-step-text {
+      font-size: 18px;
+      color: var(--text-muted);
+      display: block;
+      margin-bottom: 8px;
+    }
+
+    .tutorial-step-text.current {
+      font-weight: 700;
+      color: #000;
+      font-size: 20px;
+    }
+
+    .tutorial-step-text.done {
+      color: var(--text-muted);
+      font-weight: 400;
+    }
+
+    /* 【我已做完这一步】按钮 */
+    .tutorial-step-btn {
+      font-size: 14px;
+      padding: 8px 16px;
+      margin-top: 8px;
+    }
+
+    /* 右下角按钮组 */
+    .tutorial-controls {
+      position: fixed;
+      right: 24px;
+      bottom: 24px;
+      display: flex;
+      gap: 12px;
+      z-index: 10000;
+    }
+
+    .tutorial-btn-back,
+    .tutorial-btn-reset,
+    .tutorial-btn-complete {
+      font-size: 14px;
+      padding: 10px 18px;
+    }
+
+    .tutorial-btn-back:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    /* 窄屏适配：按钮组移到底部居中 */
+    @media (max-width: 600px) {
+      .tutorial-content {
+        padding: 24px 16px 100px;
+      }
+
+      .tutorial-dish-name {
+        font-size: 24px;
+        margin-bottom: 24px;
+      }
+
+      .tutorial-step-text {
+        font-size: 16px;
+      }
+
+      .tutorial-step-text.current {
+        font-size: 18px;
+      }
+
+      .tutorial-controls {
+        left: 16px;
+        right: 16px;
+        bottom: 16px;
+        flex-direction: column;
+      }
+
+      .tutorial-btn-back,
+      .tutorial-btn-reset,
+      .tutorial-btn-complete {
+        width: 100%;
+      }
+    }
+
+    /* ============================================================
+       十八、右侧宣传卡片（文档流布局）
+       ============================================================ */
+
+    /* 宣传卡片：跟随文档流，在"暂无推荐"下方显示 */
+    .promo-card {
+      width: 100%;
+      margin-top: 20px;
+      padding: 24px;
+      background: linear-gradient(135deg, #fff5e6 0%, #ffe8cc 100%);
+      border-radius: 16px;
+      box-shadow: 0 4px 16px rgba(255, 154, 86, 0.15);
+      display: flex;
+      align-items: flex-start;
+      gap: 20px;
+      transition: opacity 0.3s ease, transform 0.3s ease;
+    }
+
+    .promo-card.hidden {
+      display: none;
+    }
+
+    /* SVG 冰箱图标 */
+    .promo-icon {
+      width: 64px;
+      height: 64px;
+      flex-shrink: 0;
+    }
+
+    /* 右侧内容区 */
+    .promo-content {
+      flex: 1;
+    }
+
+    .promo-card-title {
+      font-size: 20px;
+      font-weight: bold;
+      color: #d97526;
+      margin-bottom: 8px;
+    }
+
+    .promo-card-subtitle {
+      font-size: 14px;
+      line-height: 1.6;
+      color: #666;
+      margin-bottom: 16px;
+    }
+
+    /* 优势列表 */
+    .promo-features {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .promo-feature {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      color: #555;
+    }
+
+    .promo-emoji {
+      font-size: 18px;
+      flex-shrink: 0;
+    }
+
+    /* 手机屏幕适配：改为垂直布局 */
+    @media (max-width: 860px) {
+      .promo-card {
+        flex-direction: column;
+        align-items: center;
+        text-align: center;
+        padding: 20px;
+      }
+
+      .promo-icon {
+        width: 56px;
+        height: 56px;
+      }
+
+      .promo-card-title {
+        font-size: 18px;
+      }
+
+      .promo-card-subtitle {
+        font-size: 13px;
+      }
+
+      .promo-features {
+        width: 100%;
+      }
+
+      .promo-feature {
+        justify-content: center;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <!-- ========== 顶部标题 ========== -->
+  <header class="page-header">
+    <!-- id 是给第十二段的「连点 5 次唤出管理员」用的，页面上看不出任何区别 -->
+    <h1 id="appTitle">冰箱盲盒大厨</h1>
+    <p class="subtitle">有什么食材，就做什么菜</p>
+  </header>
+
+  <!-- ========== 主体：左边识别+输入，右边菜谱 ========== -->
+  <main class="layout">
+
+    <!-- ---------- 左栏 ---------- -->
+    <div class="left-column">
+
+      <!-- 左栏上半部分：识别区 -->
+      <section class="card">
+        <h2 class="card-title">【📷 识别区】</h2>
+
+        <!-- 摄像头取景框：没开摄像头时显示“摄像头预览区”，开了就显示实时画面 -->
+        <div class="camera-box" id="cameraBox">
+          <video id="cameraVideo" autoplay playsinline muted></video>
+          <span class="camera-hint">摄像头预览区</span>
+        </div>
+
+        <!-- 关闭摄像头按钮：默认隐藏（hidden），摄像头开起来之后才显示 -->
+        <button class="btn btn-secondary btn-block btn-close-camera" id="btnCloseCamera" hidden>⛔ 关闭摄像头</button>
+
+        <!-- 识别按钮 -->
+        <button class="btn btn-primary btn-block" id="btnRecognize">📸 识别食材</button>
+      </section>
+
+      <!-- 左栏中间部分：食材输入区 -->
+      <section class="card">
+        <h2 class="card-title">【🥕 食材输入区】</h2>
+
+        <!-- 输入框 + 添加按钮 -->
+        <div class="input-row">
+          <input type="text" id="ingredientInput" placeholder="输入食材名称，如：西红柿">
+          <button class="btn btn-primary" id="btnAdd">➕ 添加</button>
+        </div>
+
+        <!-- 常用食材快捷标签，每个后面带一个小“+” -->
+        <div class="quick-tags" id="quickTags">
+          <button class="tag">西红柿<span class="tag-plus">+</span></button>
+          <button class="tag">鸡蛋<span class="tag-plus">+</span></button>
+          <button class="tag">土豆<span class="tag-plus">+</span></button>
+          <button class="tag">猪肉<span class="tag-plus">+</span></button>
+          <button class="tag">青椒<span class="tag-plus">+</span></button>
+          <button class="tag">白菜<span class="tag-plus">+</span></button>
+          <button class="tag">豆腐<span class="tag-plus">+</span></button>
+          <button class="tag">黄瓜<span class="tag-plus">+</span></button>
+          <button class="tag">胡萝卜<span class="tag-plus">+</span></button>
+          <button class="tag">火腿<span class="tag-plus">+</span></button>
+        </div>
+
+        <!-- 已添加食材展示区：空的时候只放一句灰色提示 -->
+        <h3 class="section-label">已添加食材</h3>
+        <div class="ingredient-list" id="ingredientList">
+          <p class="placeholder-text" id="emptyHint">暂无食材</p>
+        </div>
+
+        <!-- 基础调料勾选项（第 5 段新增）：勾上以后，提示词里会告诉模型不用把这些调料算作缺的 -->
+        <label class="seasoning-row" for="seasoningCheck">
+          <input type="checkbox" id="seasoningCheck">
+          <span>我家有基础调料、调味菜 <span class="seasoning-hint">（如盐、油、酱油、葱、姜、蒜等）</span></span>
+        </label>
+
+        <!-- 随机寻味勾选项（本次新增）：勾上以后，请求里会带上 isMysteryMode 标记，
+             由后端把提示词换成「随便推荐几道家常菜」的那种说法 -->
+        <label class="seasoning-row" for="mysteryCheck">
+          <input type="checkbox" id="mysteryCheck">
+          <span>我不知道要吃什么 <span class="seasoning-hint">（交给大厨随便挑几道）</span></span>
+        </label>
+
+        <!-- 匹配菜谱按钮 -->
+        <button class="btn btn-primary btn-block btn-match" id="btnMatch">✨ 匹配菜谱</button>
+      </section>
+
+    </div>
+
+    <!-- ---------- 右栏：菜谱展示区 ---------- -->
+    <section class="card recipe-card">
+      <h2 class="card-title">【🍳 推荐菜谱】</h2>
+
+      <!-- ---------- 星级筛选器（第十三段）----------
+           一整条扁扁的小板块：标题 + 星星条 + 灰色说明 + 确定按钮。
+           星星条里 5 颗星各占 1/5 宽，等宽本身就是隐藏分界线，
+           所以鼠标滑到哪儿都算数，不用非得点中星星。
+           默认选 0 颗，也就是「没设置」—— 这时一切照常，不加任何过滤。 -->
+      <div class="star-filter" id="starFilter">
+        <div class="star-filter-head">
+          <span class="star-filter-label">您希望做几星的菜谱</span>
+          <span class="star-filter-state" id="starFilterState">未选择</span>
+        </div>
+
+        <!-- 星星条。tabindex 让它能被键盘 Tab 选中，左右方向键也能选星级 -->
+        <div class="star-band" id="starBand" tabindex="0" role="slider"
+             aria-label="选择希望的最低星级" aria-valuemin="1" aria-valuemax="5" aria-valuenow="0">
+          <span class="star-cell">★</span>
+          <span class="star-cell">★</span>
+          <span class="star-cell">★</span>
+          <span class="star-cell">★</span>
+          <span class="star-cell">★</span>
+        </div>
+
+        <p class="star-filter-note">
+          当你按下确定的时候，我们将会为你自动更改推荐菜谱和更多菜谱的最低星级，
+          也就是说，这个星星交互按钮是指，用户希望的菜谱最低星级，
+          如果用户没有点击这个星星，那么一切照常。
+        </p>
+
+        <div class="star-filter-actions">
+          <button class="btn btn-primary btn-star-apply" id="starApplyBtn">确定</button>
+        </div>
+      </div>
+
+      <!-- 第一个容器：现有食材能做的菜。空的时候显示灰色提示 -->
+      <div class="recipe-list" id="recipeList">
+        <p class="placeholder-text" id="recipeEmpty">暂无推荐，请先添加食材</p>
+      </div>
+
+      <!-- ========== 右侧宣传卡片（移动到文档流） ========== -->
+      <div class="promo-card" id="promoCard">
+        <!-- SVG 冰箱图标 -->
+        <svg class="promo-icon" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+          <rect x="16" y="8" width="32" height="48" rx="4" fill="#fff" opacity="0.9"/>
+          <line x1="16" y1="28" x2="48" y2="28" stroke="#ff9a56" stroke-width="2"/>
+          <circle cx="22" cy="18" r="2" fill="#ff9a56"/>
+          <circle cx="22" cy="38" r="2" fill="#ff9a56"/>
+        </svg>
+
+        <div class="promo-content">
+          <div class="promo-card-title">冰箱盲盒大厨</div>
+          <div class="promo-card-subtitle">用AI解决今天吃什么，告别外卖，零基础也能做大厨！</div>
+
+          <div class="promo-features">
+            <div class="promo-feature">
+              <span class="promo-emoji">📷</span>
+              <span>拍照识别冰箱食材</span>
+            </div>
+            <div class="promo-feature">
+              <span class="promo-emoji">🍎</span>
+              <span>BMI精准配餐计算</span>
+            </div>
+            <div class="promo-feature">
+              <span class="promo-emoji">📖</span>
+              <span>小白手把手教程</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 菜谱下方的操作区：默认整块藏起来，等第一次匹配出结果之后才显示 -->
+      <div class="recipe-actions" id="recipeActions" hidden>
+
+        <!-- 🔄 换一批：菜品超过 5 道时才有意义，所以 ≤5 道时会被藏起来 -->
+        <button class="btn btn-secondary btn-block" id="btnShuffle">🔄 换一批</button>
+
+        <!-- 额外食材解锁区 -->
+        <div class="extra-box" id="extraBox">
+          <!-- ≤5 道菜时显示的解释文字 -->
+          <p class="extra-hint" id="extraHint" hidden></p>
+
+          <!-- 这里用 type="number" 并配上 min/max，是为了让 max 真正生效
+               （text 类型的 max 属性会被浏览器忽略，等于摆设）。
+               手机上还会自动弹出数字键盘，输入更省事。
+               真正的把关仍在 JS 里 —— 原生属性可以被绕过，校验不能只靠它。 -->
+          <input type="number" class="extra-count-input" id="extraCountInput"
+                 min="1" max="5" step="1" inputmode="numeric"
+                 placeholder="您希望添加大约几道食材来解锁？(1-5道)">
+
+          <!-- 固定的小灰字说明：点了解锁就默认有基础调料，不用再单独勾 -->
+          <span class="extra-note">如果您点击了需要购买额外食材，则默认您有基础调料和调味食材。</span>
+
+          <button class="btn btn-primary btn-block" id="btnUnlock">🛒 需要额外购买食材解锁更多</button>
+
+          <span class="extra-status" id="extraStatus" hidden></span>
+        </div>
+      </div>
+
+      <!-- 第二个容器：需要额外买食材才能做的菜。
+           它和上面的【🍳 推荐菜谱】是两栏独立的内容 ——
+           解锁出来的菜只往这里加，绝不替换、也不清空上面的那一栏。
+           默认整栏藏起来，等第一次解锁成功后由 JS 显示。 -->
+      <div class="extra-recipe-section" id="extraRecipeSection" hidden>
+        <h3 class="recipe-section-title">【🛒 额外购买食材后能做】</h3>
+        <div class="recipe-list filled" id="extraRecipeList"></div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ========== 备菜清单（右下角悬浮面板）==========
+       默认整块藏起来（hidden）：一道菜都没勾的时候不该占屏幕。
+       勾上第一道菜之后由 JS 把 hidden 去掉，它才露面。
+       列表内容是 JS 动态生成的，所以这里只搭个空壳。 -->
+  <aside class="prep-panel" id="prepPanel" hidden>
+    <div class="prep-panel-head">
+      <span class="prep-panel-title">📝 备菜清单</span>
+      <span class="prep-panel-count" id="prepPanelCount"></span>
+    </div>
+
+    <!-- 清单里的卡片。超过 3 道时这里会出现滚动条 -->
+    <div class="prep-list" id="prepList"></div>
+
+    <p class="prep-hint">可长按拖动调整顺序，备菜将按此顺序进行</p>
+
+    <!-- 人数输入区 + 现在去做菜按钮 -->
+    <div class="prep-people">
+      <div class="prep-people-label">用餐人数</div>
+      <div class="prep-people-row">
+        <input type="number" class="prep-people-input" id="maleCount"
+               min="0" max="99" step="1" placeholder="男">
+        <input type="number" class="prep-people-input" id="femaleCount"
+               min="0" max="99" step="1" placeholder="女">
+      </div>
+      <p class="prep-people-note">基于中国BMI健康标准，一餐八分饱的估算，未填默认为0</p>
+      <button class="btn btn-primary btn-cook" id="btnCook">🍳 现在去做菜</button>
+    </div>
+  </aside>
+
+  <!-- ========== 浮动提示的容器 ==========
+       空着放在这儿，谁需要提示谁往里塞一条 .toast。
+       3 秒后由 JS 自动淡出并删掉，用户不用点任何按钮。
+       默认没有任何内容，所以页面刚打开时看不见它。 -->
+  <div class="toast-container" id="toastContainer" aria-live="polite"></div>
+
+  <!-- ========== 全屏教程覆盖层 ========== -->
+  <div class="tutorial-overlay" id="tutorialOverlay" hidden>
+    <!-- 左上角返回主界面按钮 -->
+    <button class="tutorial-back-home" id="tutorialBackHome">← 返回主界面</button>
+
+    <div class="tutorial-content" id="tutorialContent">
+      <!-- 教程主体 -->
+      <div class="tutorial-main" id="tutorialMain">
+        <!-- 菜名（左上角，最大字号） -->
+        <h1 class="tutorial-dish-name" id="tutorialDishName"></h1>
+
+        <!-- 步骤列表 -->
+        <div class="tutorial-steps" id="tutorialSteps"></div>
+
+        <!-- 右下角按钮组 -->
+        <div class="tutorial-controls">
+          <button class="btn btn-secondary tutorial-btn-back" id="tutorialBtnBack">⬅️ 返回上一个</button>
+          <button class="btn btn-secondary tutorial-btn-reset" id="tutorialBtnReset">🔄 重做本菜</button>
+          <button class="btn btn-primary tutorial-btn-complete" id="tutorialBtnComplete">✅ 完成本道菜</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== 自定义模态框 ==========
+       一个框两用：① 点识别按钮时说明为什么要用摄像头；② 权限被拒时告诉用户怎么恢复。
+       具体显示哪句话、按钮写什么，都由 JS 里的 showModal() 决定。
+       默认带 hidden 属性，所以页面刚打开时看不到它。 -->
+  <div class="modal-overlay" id="modalOverlay" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <h3 class="modal-title" id="modalTitle">需要用到您的摄像头</h3>
+      <p class="modal-text" id="modalText"></p>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" id="modalCancel">取消</button>
+        <button class="btn btn-primary" id="modalConfirm">好的，开始识别</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== 管理员：设置面板 ==========
+       三个字段：API Key、模型、每日调用上限。
+       顶部那行会实时显示「今天已调用几次 / 上限几次」。 -->
+  <div class="admin-overlay" id="adminPanelOverlay" hidden>
+    <div class="admin-card" role="dialog" aria-modal="true" aria-labelledby="adminPanelTitle">
+      <h3 class="modal-title" id="adminPanelTitle">⚙️ 管理员设置</h3>
+
+      <!-- 今日用量。内容由 renderAdminStatus() 填 -->
+      <p class="admin-status" id="adminStatus"></p>
+
+      <div class="admin-field">
+        <label class="admin-label" for="adminApiKeyInput">API Key</label>
+        <input type="password" class="admin-input" id="adminApiKeyInput"
+               placeholder="留空则使用服务器 .env 里的 Key" autocomplete="off">
+        <p class="admin-hint">
+          留空就用服务器 <code>.env</code> 里配好的 Key（推荐，最安全）。
+          这里填的 Key 只存在你自己浏览器的 localStorage 里。
+        </p>
+      </div>
+
+      <div class="admin-field">
+        <label class="admin-label" for="adminModelSelect">模型</label>
+        <select class="admin-input admin-select" id="adminModelSelect"></select>
+        <p class="admin-hint">识别图片（拍照）必须用支持看图的模型。</p>
+      </div>
+
+      <div class="admin-field">
+        <label class="admin-label" for="adminDailyLimitInput">每日调用上限</label>
+        <input type="number" class="admin-input" id="adminDailyLimitInput"
+               min="1" max="9999" step="1" placeholder="例如 50">
+        <p class="admin-hint">
+          每调用一次接口（识别食材 / 匹配菜谱 / 解锁更多）算一次，超过就弹窗拦住。
+          每天 0 点自动清零，重新开始计数。
+        </p>
+      </div>
+
+      <div class="admin-actions">
+        <button class="btn btn-secondary" id="adminResetUsage">🔄 今日次数清零</button>
+        <button class="btn btn-secondary" id="adminClose">关闭</button>
+        <button class="btn btn-primary" id="adminSave">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    /* ============================================================
+       JavaScript —— 第 7 段：识别走 /api/vision，菜谱走 /api/chat
+       ------------------------------------------------------------
+       这个文件里没有、也不会有任何 API Key。
+
+       浏览器 ──(不带 Key，只带图片/文字)──> 自己的服务器 ──(带 Key)──> DeepSeek
+                                             server.js 才存着 Key
+
+       所以必须开着 server.js 才能用：
+         1. 在本程序目录里执行   node server.js
+         2. 浏览器打开                http://localhost:3000
+
+       如果直接双击打开这个 html（地址栏是 file:// 开头），
+       点按钮会提示先去启动服务器。
+       ============================================================ */
+
+    // ========== 配置区 ==========
+    // 两个接口分开：识别图片走 vision，推荐菜谱走 chat。
+    // 用相对路径是因为网页和服务器是同一个地址同一个端口，换服务器也不用改。
+    const API_VISION_URL = '/api/vision';
+    const API_CHAT_URL = '/api/chat';
+
+    /* 浏览器这边的等待上限，故意比服务器那边（20 秒 / 30 秒）大一点。
+       为什么要大一点：如果浏览器先放弃，它就收不到服务器返回的那句
+       “网络异常”JSON 了，只能靠自己瞎猜。让服务器先超时，
+       错误原因就永远是清楚的。 */
+    const VISION_TIMEOUT = 25000;   // 识别图片：25 秒（服务器 20 秒先超时）
+    const CHAT_TIMEOUT   = 35000;   // 推荐菜谱：35 秒（服务器 30 秒先超时）
+
+    /* ---------- 管理员系统配置（连点标题 5 次直接进入） ---------- */
+
+    // 清 localStorage 想找回来：控制台执行 localStorage.removeItem('fridgeChefAdminConfig')
+    const ADMIN_CONFIG_KEY = 'fridgeChefAdminConfig';   // 设置面板存哪儿
+    const ADMIN_USAGE_KEY  = 'fridgeChefUsage';         // 今日调用次数存哪儿
+
+    // 设置面板里没保存过时用的默认值
+    const ADMIN_DEFAULT_CONFIG = {
+      apiKey: '',                 // 留空表示「用服务器 .env 里的 Key」
+      model: 'deepseek-flash',    // 默认模型（和 server.js 里写的一致）
+      dailyLimit: 50              // 每天最多调用几次 API
+    };
+
+    // 可选模型清单（下拉框用它生成选项）。第一个是默认值。
+    const ADMIN_MODEL_OPTIONS = [
+      { value: 'deepseek-flash',    label: 'deepseek-flash（默认，支持拍照识图）' },
+      { value: 'deepseek-chat',     label: 'deepseek-chat（纯文字，不能识图）' },
+      { value: 'deepseek-reasoner', label: 'deepseek-reasoner（会思考，比较慢）' }
+    ];
+
+    // 连点标题唤出管理员：点几次、每次间隔不超过多少毫秒
+    const ADMIN_CLICK_NEEDED = 5;
+    const ADMIN_CLICK_GAP_MS = 1000;
+    // =================================
+
+    /* ---------- 第一步：把页面上要用到的元素先“抓”到变量里 ---------- */
+    // document.getElementById('xxx') 的意思是：在页面里找到 id 叫 xxx 的那个元素
+    var inputEl       = document.getElementById('ingredientInput'); // 输入框
+    var addBtn        = document.getElementById('btnAdd');           // ➕ 添加 按钮
+    var recognizeBtn  = document.getElementById('btnRecognize');     // 📸 识别食材 按钮
+    var matchBtn      = document.getElementById('btnMatch');         // ✨ 匹配菜谱 按钮
+    var quickTags     = document.getElementById('quickTags');        // 快捷标签的容器
+    var listEl        = document.getElementById('ingredientList');   // 已添加食材的容器
+    var emptyHint     = document.getElementById('emptyHint');        // “暂无食材”那行灰字
+    var cameraBox     = document.getElementById('cameraBox');        // 取景框
+    var videoEl       = document.getElementById('cameraVideo');      // 实时画面
+    var recipeListEl  = document.getElementById('recipeList');       // 菜谱容器
+    var recipeEmptyEl = document.getElementById('recipeEmpty');      // “暂无推荐”那行灰字
+    var seasoningCheck = document.getElementById('seasoningCheck');  // “我家有基础调料”勾选框
+    var mysteryCheck   = document.getElementById('mysteryCheck');    // “我不知道要吃什么”勾选框
+    var closeCameraBtn = document.getElementById('btnCloseCamera');  // ⛔ 关闭摄像头 按钮
+
+    // 自定义模态框的几个零件
+    var modalOverlay = document.getElementById('modalOverlay');   // 半透明遮罩（整个框）
+    var modalTitle   = document.getElementById('modalTitle');     // 框里的大标题
+    var modalText    = document.getElementById('modalText');      // 框里那段说明文字
+    var modalCancel  = document.getElementById('modalCancel');    // 【取消】
+    var modalConfirm = document.getElementById('modalConfirm');   // 【好的，开始识别】
+
+    // 管理员系统的零件（第十二段才会用到）
+    var appTitleEl        = document.getElementById('appTitle');            // 顶部大标题（要点它 5 次）
+    var adminPanelOverlay = document.getElementById('adminPanelOverlay');   // 设置面板
+    var adminStatusEl     = document.getElementById('adminStatus');         // 面板顶部的用量那一行
+    var adminApiKeyInput  = document.getElementById('adminApiKeyInput');    // API Key 输入框
+    var adminModelSelect  = document.getElementById('adminModelSelect');    // 模型下拉框
+    var adminDailyLimitInput = document.getElementById('adminDailyLimitInput'); // 每日上限输入框
+    var adminResetUsageBtn = document.getElementById('adminResetUsage');    // 【今日次数清零】
+    var adminCloseBtn     = document.getElementById('adminClose');          // 【关闭】
+    var adminSaveBtn      = document.getElementById('adminSave');           // 【保存】
+
+    // 菜谱下方操作区的几个零件
+    var recipeActionsEl = document.getElementById('recipeActions');   // 整块操作区
+    var btnShuffle      = document.getElementById('btnShuffle');      // 🔄 换一批
+    var extraBox        = document.getElementById('extraBox');        // 解锁区
+    var extraHint       = document.getElementById('extraHint');       // ≤5 道时的解释文字
+    var extraCountInput = document.getElementById('extraCountInput'); // 输入想加几道食材
+    var btnUnlock       = document.getElementById('btnUnlock');       // 🛒 解锁按钮
+    var extraStatusEl   = document.getElementById('extraStatus');     // 解锁结果小字
+    var accumulatedExtraIngredientsEl = null;                          // 累计新增食材清单
+
+    // 第二栏【🛒 额外购买食材后能做】的两个零件
+    var extraRecipeSectionEl = document.getElementById('extraRecipeSection'); // 整栏（含标题）
+    var extraRecipeListEl    = document.getElementById('extraRecipeList');    // 卡片容器
+
+    // 备菜清单（右下角悬浮面板）的三个零件
+    var prepPanelEl      = document.getElementById('prepPanel');      // 整块面板
+    var prepListEl       = document.getElementById('prepList');       // 清单里的卡片容器
+    var prepPanelCountEl = document.getElementById('prepPanelCount'); // 标题右边那句「3 道」
+
+    // 人数输入框和做菜按钮
+    var maleCountInput   = document.getElementById('maleCount');      // 男性人数输入框
+    var femaleCountInput = document.getElementById('femaleCount');    // 女性人数输入框
+    var btnCook          = document.getElementById('btnCook');        // 【现在去做菜】按钮
+
+    // 全屏教程覆盖层的元素
+    var tutorialOverlay  = document.getElementById('tutorialOverlay');
+    var tutorialMain     = document.getElementById('tutorialMain');
+    var tutorialDishName = document.getElementById('tutorialDishName');
+    var tutorialSteps    = document.getElementById('tutorialSteps');
+    var tutorialBtnBack  = document.getElementById('tutorialBtnBack');
+    var tutorialBtnReset = document.getElementById('tutorialBtnReset');
+    var tutorialBtnComplete = document.getElementById('tutorialBtnComplete');
+    var tutorialBackHome = document.getElementById('tutorialBackHome');
+
+    // 浮动提示的容器（第十四段才会用到）
+    var toastContainer   = document.getElementById('toastContainer');   // 堆叠 toast 的地方
+
+    /* ---------- 第二步：两个“状态变量” ---------- */
+
+    // 数据仓库：页面长什么样，完全由这个数组决定
+    var ingredients = [];
+
+    // 摄像头视频流。开着的时候是个对象，没开的时候是 null。
+    // 存起来有两个用处：① “只开一次”，不要每点一次就重新申请一次权限；
+    //                      ② 关闭摄像头时要靠它拿到轨道才能停掉。
+    var cameraStream = null;
+
+    // 识别按钮平时显示的文字。第一次开摄像头后会改成“拍下这张”，
+    // 所以要用变量记住，不能用写死的字符串。
+    var recognizeIdleLabel = '📸 识别食材';
+
+    /* ---------- 自动重新匹配（第十五段）----------
+       autoMatchTimer      防抖用的定时器。连点几个食材时，只让最后一次生效。
+       pendingMatchOptions 有请求在飞的时候又来了新的匹配要求，把「最新那一份食材」
+                           记在这儿，等当前请求一结束立刻补发。只记最后一次：
+                           中间那些食材早就过时了，不值得再发。
+       matchInFlight       有没有正在进行的匹配请求。有的话新的匹配先排队，
+                           免得同一个页面同时挂着两个请求、结果互相覆盖。 */
+    var autoMatchTimer = null;
+    var pendingMatchOptions = null;
+    var matchInFlight = false;
+
+    /* 食材的「第几版」。只要食材一变，这个数就 +1。
+       每次发匹配请求时先记下当时的版本号，等结果回来一比：
+       号一样 → 这份菜谱对应的就是最新食材，可以画；
+       号不一样 → 中间用户改过食材了，这份菜谱已经过时，直接扔掉。
+
+       为什么光靠 pendingMatchOptions 不够：用户改食材之后有 500 毫秒的
+       等待期，这段时间里上一个请求完全可能刚好回来 —— 那时还没有任何
+       「待办」被记下，过时的菜谱就会被画到屏幕上。有了版本号就堵住了。 */
+    var ingredientsEpoch = 0;
+
+    /* ---------- 第三步：食材列表的增删改查（第 2 段的老逻辑） ---------- */
+
+    // 判断某个食材是不是已经在数组里了（返回 true / false）
+    function isDuplicate(name) {
+      // indexOf 会找出这个值在数组里的位置；找不到就返回 -1
+      return ingredients.indexOf(name) !== -1;
+    }
+
+    // 根据 ingredients 数组，重新画一遍“已添加食材”区域
+    function renderIngredients() {
+      // 先把容器里的内容全部清空（innerHTML = '' 就是“清空”）
+      listEl.innerHTML = '';
+
+      if (ingredients.length === 0) {
+        // 情况一：一个食材都没有 → 显示灰色提示文字
+        listEl.appendChild(emptyHint);
+
+        /* ★ 食材变空时，显示右下角宣传卡片 ★ */
+        var promoCard = document.getElementById('promoCard');
+        if (promoCard) {
+          promoCard.classList.remove('hidden');
+        }
+
+        return;
+      }
+
+      // 情况二：有食材 → 每个食材生成一个小标签
+      for (var i = 0; i < ingredients.length; i++) {
+        var name = ingredients[i];
+
+        // 创建标签本体：<span class="ingredient-chip">西红柿<button>×</button></span>
+        var chip = document.createElement('span');
+        chip.className = 'ingredient-chip';
+        chip.textContent = name; // textContent 比 innerHTML 安全，内容不会被当成代码
+
+        // 创建标签上的「×」按钮
+        var removeBtn = document.createElement('button');
+        removeBtn.className = 'chip-remove';
+        removeBtn.type = 'button';
+        removeBtn.textContent = '×';
+        removeBtn.title = '删除 ' + name; // 鼠标悬停时的小提示
+
+        // 给「×」绑定点一下就删除的动作
+        removeBtn.addEventListener('click', makeRemoveHandler(name));
+
+        chip.appendChild(removeBtn);
+        listEl.appendChild(chip);
+      }
+    }
+
+    // 生成一个“删除某个食材”的点击处理函数
+    // 写成函数工厂，是为了把当前的 name 牢牢锁在里面（避免循环变量的坑）
+    function makeRemoveHandler(name) {
+      return function () {
+        // filter 会留下满足条件的项：这里把所有「不等于 name」的项留下，等于删掉它
+        ingredients = ingredients.filter(function (item) {
+          return item !== name;
+        });
+        renderIngredients(); // 数据变了，重画一次
+        onIngredientsChanged(); // 食材变了，旧的菜谱就不作数了
+      };
+    }
+
+    // 添加一个食材
+    //   rawName：用户输入或接口返回的食材名
+    //   silent ：true 表示“安静模式”——重复了也不弹窗。
+    //            识别一次可能返回好几个食材，如果每个重复的都弹一次窗，用户会被弹窗淹没
+    // 返回值：true = 添加成功；false = 空字符串或重复
+    function addIngredient(rawName, silent) {
+      // trim() 去掉首尾空格，防止手滑敲了空格
+      var name = String(rawName).trim();
+
+      // 空字符串直接当成没输入，什么都不做
+      if (name === '') {
+        return false;
+      }
+
+      // ★ 违禁词黑名单：过滤恶心/垃圾输入 ★
+      var forbiddenWords = ['屎', '尿', '粪', '便', '毒药', '农药', '砒霜', '老鼠药', '杀虫剂', '洗洁精', '肥皂'];
+      for (var i = 0; i < forbiddenWords.length; i++) {
+        if (name.indexOf(forbiddenWords[i]) !== -1) {
+          if (!silent) {
+            showToast('请输入可食用的真实食材哦～');
+          }
+          return false;
+        }
+      }
+
+      // 去重：已经有了就提示，并且不再添加
+      if (isDuplicate(name)) {
+        if (!silent) {
+          showToast('该食材已添加');
+        }
+        return false;
+      }
+
+      ingredients.push(name); // push 把新食材放到数组末尾
+      renderIngredients();    // 重画列表
+      onIngredientsChanged(); // 食材变了，旧的菜谱就不作数了
+      return true;
+    }
+
+    /* ---------- 第四步：界面上的“小反馈” ---------- */
+
+    // 按钮进入“忙碌”状态：文字换成 busyText，并且禁用（防止重复点击）
+    function beginBusy(btn, busyText) {
+      btn.disabled = true;
+      btn.textContent = busyText;
+    }
+
+    // 按钮恢复可点，文字换成 idleLabel
+    function endBusy(btn, idleLabel) {
+      btn.disabled = false;
+      btn.textContent = idleLabel;
+    }
+
+    // 在菜谱区显示一句居中的灰色提示（加载中 / 空状态都走这里）
+    function showRecipePlaceholder(text) {
+      recipeListEl.classList.remove('filled');  // 去掉“块状排列”，回到居中显示
+      recipeListEl.innerHTML = '';
+      recipeEmptyEl.textContent = text;
+      recipeListEl.appendChild(recipeEmptyEl);
+    }
+
+    /* ---------- 浮动提示 Toast（第十四段） ----------
+
+       和 alert() 的区别：alert 会**卡住整个页面**，必须点一下才能继续，
+       纯告知性的消息用它太重了。这里改成在页面底部浮一条，3 秒后自己淡走。
+
+       所有「只是告诉你一件事」的提示都改成了 showToast()：
+       网络异常、识别不到食材、次数用完、保存成功等等。
+       唯一保留原生弹窗的是 confirm()（比如关闭摄像头前的确认）——
+       那是在问用户「确定还是取消」，必须等一个明确回答，
+       用会自动消失的提示替代的话，用户还没看清就没了，等于替他做了决定。 */
+    var TOAST_DURATION_MS = 3000;    // 停留 3 秒
+    var TOAST_FADE_MS = 300;         // 淡出动画 0.3 秒，和 CSS 里的 transition 对上
+
+    /* 在页面底部浮一条提示。
+       message 里的换行符（\n）会被保留，所以多行提示也看得清。
+       连着来好几条时会自动竖着叠起来，不会互相盖住。 */
+    function showToast(message) {
+      var text = String(message == null ? '' : message).trim();
+      if (text === '') {
+        return;   // 空消息不弹，免得冒出一个空白小方块
+      }
+
+      var toast = document.createElement('div');
+      toast.className = 'toast';
+      // 用 textContent 而不是 innerHTML：提示里可能带着用户输入的食材名，
+      // 万一里面混了 <script> 之类的字符，也不会被当成代码执行
+      toast.textContent = text;
+      toastContainer.appendChild(toast);
+
+      // 3 秒后加上淡出用的类，等动画放完再把元素从页面上整个删掉。
+      // 分两步是为了让「淡出」看得见 —— 直接 remove 会啪一下就消失。
+      setTimeout(function () {
+        toast.classList.add('toast-hide');
+        setTimeout(function () {
+          if (toast.parentNode) {
+            toast.parentNode.removeChild(toast);
+          }
+        }, TOAST_FADE_MS);
+      }, TOAST_DURATION_MS);
+    }
+
+    /* 检查运行环境对不对。
+       以前要检查“Key 填了没”，现在 Key 在服务器那边，网页管不着，
+       所以要检查的是「这个页面是不是从服务器打开的」。
+
+       如果直接双击 html 打开，地址栏是 file:// 开头，
+       这种页面发不出 /api/chat 请求，得提醒用户改用 node server.js 启动。 */
+    function checkEnvironment() {
+      if (location.protocol === 'file:') {
+        console.warn('这个页面是双击打开的（file://），连不上后端。请改用 node server.js 启动，然后访问 http://localhost:3000');
+        showToast('请先启动服务器：在本程序目录执行 node server.js，再打开 http://localhost:3000');
+        return false;
+      }
+      return true;
+    }
+
+    /* ---------- 第五步：摄像头 ---------- */
+
+    // 打开摄像头，把画面接到 <video> 上。
+    // 已经开过就直接返回，不重复申请权限。
+    async function startCamera() {
+      if (cameraStream) {
+        return; // 已经开着了，直接用
+      }
+
+      // 有些浏览器（或 http 网页）根本没有这个功能，先检查一下
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error('当前浏览器不支持摄像头，或者页面不是安全环境（https / localhost）');
+      }
+
+      // getUserMedia 会弹出“是否允许使用摄像头”的系统询问
+      // facingMode: 'environment' 表示优先用后置摄像头（手机上拍东西更方便）
+      var stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false
+      });
+
+      cameraStream = stream;
+      videoEl.srcObject = stream;  // 把视频流接到页面的 <video> 上
+      try {
+        await videoEl.play();      // 某些浏览器要求手动调一下 play()
+      } catch (err) {
+        // 自动播放被拦截不算致命错误，后面照样能截到帧，这里只记一笔
+        console.warn('video.play() 被拒绝，继续尝试截图：', err);
+      }
+
+      cameraBox.classList.add('streaming'); // 让画面显示出来、藏掉“摄像头预览区”四个字
+      closeCameraBtn.hidden = false;        // 摄像头开了，才让【⛔ 关闭摄像头】露面
+    }
+
+    // 关闭摄像头。
+    // 关键点：这里只动“摄像头相关”的东西，绝不碰 ingredients 数组，
+    // 也绝不调用 location.reload() —— 页面不刷新，已经添加的食材、已经算好的菜谱都还在。
+    function stopCamera() {
+      // 二次确认。用户点“取消”就什么都不做，摄像头继续开着。
+      if (!confirm('确定要关闭摄像头吗？')) {
+        return;
+      }
+
+      // 1. 停掉所有轨道。摄像头硬件上的那个“正在使用”的小灯就是靠这一步灭掉的；
+      //    不 stop 的话，就算把画面从页面上拿掉，摄像头其实还在拍。
+      if (cameraStream) {
+        cameraStream.getTracks().forEach(function (track) {
+          track.stop();
+        });
+      }
+
+      // 2. 把引用清空。这一步很重要：下次点【📸 识别食材】时，
+      //    startCamera() 里的 if (cameraStream) 判断才会是 false，
+      //    从而重新申请摄像头、重新打开画面。
+      cameraStream = null;
+
+      // 3. 断开视频源，画面立刻黑掉（不置 null 的话最后一帧会一直留在那儿）
+      videoEl.srcObject = null;
+
+      // 4. 恢复成最初的样子：去掉 streaming，方框变回灰色虚线的“摄像头预览区”
+      cameraBox.classList.remove('streaming');
+
+      // 5. 藏起关闭按钮，并把识别按钮的文字恢复成最初的“📸 识别食材”
+      closeCameraBtn.hidden = true;
+      recognizeIdleLabel = '📸 识别食材';
+      recognizeBtn.textContent = recognizeIdleLabel;
+
+      console.log('摄像头已关闭（页面没有刷新，已添加的食材不受影响）');
+    }
+
+    /* ---------- 第五步之二：自定义模态框 ----------
+       一个框两用：① 申请前说明为什么要用摄像头；② 权限被拒时告诉用户怎么恢复。
+       下面这几个函数只管“显示/隐藏”，不管什么时候该显示哪句话 ——
+       那是下一步“权限流程”的事。分开写，两边都好改。 */
+
+    // 当前【确认】按钮该干什么。每次 showModal 都会换成新的，
+    // 所以同一个框可以承载不同的动作。
+    var modalConfirmHandler = null;
+
+    // 显示模态框。
+    //   options.title       大标题
+    //   options.text        正文
+    //   options.confirmText 确认按钮上的字
+    //   options.showCancel  要不要显示【取消】按钮（默认要）
+    //   options.onConfirm   点了确认之后执行什么
+    function showModal(options) {
+      modalTitle.textContent = options.title || '';
+      modalText.textContent = options.text || '';
+      modalConfirm.textContent = options.confirmText || '好的';
+      modalCancel.hidden = !options.showCancel;
+      modalConfirmHandler = options.onConfirm || null;
+      modalOverlay.hidden = false;
+      modalConfirm.focus();     // 让键盘用户可以直接按回车确认
+    }
+
+    // 隐藏模态框
+    function hideModal() {
+      modalOverlay.hidden = true;
+      modalConfirmHandler = null;
+    }
+
+    // 【确认】：先关框，再执行动作。
+    // 先关框是为了让用户马上看到反馈，不至于盯着一个卡住的框。
+    modalConfirm.addEventListener('click', function () {
+      var handler = modalConfirmHandler;
+      hideModal();
+      if (typeof handler === 'function') {
+        handler();
+      }
+    });
+
+    // 【取消】：只关框，什么都不做
+    modalCancel.addEventListener('click', function () {
+      hideModal();
+    });
+
+    // 点框外面的半透明区域、或者按 Esc，都当成取消 —— 符合大家对弹窗的直觉
+    modalOverlay.addEventListener('click', function (event) {
+      if (event.target === modalOverlay) {
+        hideModal();
+      }
+    });
+    document.addEventListener('keydown', function (event) {
+      if (event.key === 'Escape' && !modalOverlay.hidden) {
+        hideModal();
+      }
+    });
+
+    /* ---------- 第五步之三：摄像头权限申请流程 ---------- */
+
+    // 权限被拒时给用户看的话。写成常量，是因为它要在两个地方用到
+    // （点按钮前发现是 denied、以及刚在原生弹窗里被拒），避免两处文字不一致。
+    var PERMISSION_DENIED_TEXT = '您之前拒绝了摄像头权限，请点击浏览器地址栏左侧的锁形图标，' +
+      '将摄像头权限设为“允许”后，再点击一次识别按钮。';
+
+    // 查一下浏览器里摄像头权限现在是什么状态。
+    // 返回 'granted'（已允许）/ 'prompt'（还没问过）/ 'denied'（被拒绝）/ 'unknown'（查不了）
+    async function queryCameraPermission() {
+      if (!navigator.permissions || !navigator.permissions.query) {
+        return 'unknown';   // 浏览器太老，没有这个功能
+      }
+      try {
+        var status = await navigator.permissions.query({ name: 'camera' });
+        return status.state;
+      } catch (err) {
+        // Safari、Firefox 不认 'camera' 这个名字，会直接抛错。
+        // 返回 unknown，后面的逻辑会当作“照常申请”处理 —— 不影响使用，只是少一层预判。
+        return 'unknown';
+      }
+    }
+
+    // 弹出“权限被拒，请点锁形图标恢复”的说明框。只有一个按钮。
+    function showPermissionDeniedModal() {
+      showModal({
+        title: '摄像头权限被拒绝',
+        text: PERMISSION_DENIED_TEXT,
+        confirmText: '我知道了',
+        showCancel: false
+      });
+    }
+
+    // 点【📸 识别食材】之后的第一件事：弹说明框，把选择权交给用户。
+    // 注意：每次点击都会走这里，所以就算上次拒绝了，这次照样重新问一遍。
+    function openCameraIntroModal() {
+      // 先确认页面是从服务器打开的（file:// 页面连不上后端）。
+      // 放在最前面，免得用户都点完“允许”、摄像头也开了，才发现发不出请求。
+      if (!checkEnvironment()) {
+        return;
+      }
+
+      showModal({
+        title: '需要用到您的摄像头',
+        text: '为了识别冰箱里的食材，我们需要使用您的摄像头。请点击下方按钮，并在浏览器提示中点击“允许”。',
+        confirmText: '好的，开始识别',
+        showCancel: true,
+        onConfirm: confirmThenStartCamera
+      });
+    }
+
+    // 用户点了【好的，开始识别】之后：先看权限状态，再决定要不要真的去开摄像头
+    async function confirmThenStartCamera() {
+      var state = await queryCameraPermission();
+
+      // 情况一：之前被拒绝过。
+      // 这时候再调摄像头只会立刻失败（画面黑着、控制台一片红），
+      // 所以不调，直接告诉用户怎么恢复权限。
+      if (state === 'denied') {
+        showPermissionDeniedModal();
+        return;
+      }
+
+      /* 情况二：granted（已经允许过）→ getUserMedia 不会再弹原生的框，直接开；
+         情况三：prompt（全新用户）    → getUserMedia 会弹出浏览器的原生申请框；
+         情况四：unknown（查不了）      → 也照常申请，交给浏览器去问。
+         这三种都是同一句 startCamera()，区别只在浏览器自己怎么表现。 */
+      try {
+        await startCamera();
+      } catch (err) {
+        // 用户刚刚在浏览器的原生弹窗里点了“拒绝”
+        if (err && (err.name === 'NotAllowedError' || err.name === 'SecurityError')) {
+          showPermissionDeniedModal();
+        } else {
+          console.warn('摄像头打不开：' + (err && err.message ? err.message : err));
+          showToast('无法使用摄像头，请检查浏览器权限或摄像头是否被占用');
+        }
+        return;
+      }
+
+      // 摄像头已经就绪，接着走“拍照 → 发给 /api/vision → 填入食材”那套流程
+      recognizeImage(null);
+    }
+
+    // 等 <video> 真正拿到画面（videoWidth 有值）再往下走，最多等 5 秒
+    function waitForVideoReady(timeoutMs) {
+      return new Promise(function (resolve, reject) {
+        var startTime = Date.now();
+        var timer = setInterval(function () {
+          if (videoEl.videoWidth > 0 && videoEl.videoHeight > 0) {
+            clearInterval(timer);
+            resolve();
+          } else if (Date.now() - startTime > timeoutMs) {
+            clearInterval(timer);
+            reject(new Error('等不到摄像头画面'));
+          }
+        }, 100);
+      });
+    }
+
+    // 拍照：把当前画面画到 Canvas 上，缩到宽 800px，导出成 JPEG 的 Base64
+    function captureFrame() {
+      var srcW = videoEl.videoWidth;   // 摄像头原始宽
+      var srcH = videoEl.videoHeight;  // 摄像头原始高
+      if (srcW === 0 || srcH === 0) {
+        throw new Error('摄像头还没有画面');
+      }
+
+      // 计算缩放比例：目标宽度 800px。
+      // 用 Math.min(1, ...) 是为了“只缩小、不放大”——原图本来就窄的话就保持原样
+      var scale = Math.min(1, 800 / srcW);
+      var dstW = Math.round(srcW * scale);
+      var dstH = Math.round(srcH * scale);
+
+      var canvas = document.createElement('canvas');
+      canvas.width = dstW;
+      canvas.height = dstH;
+      var ctx = canvas.getContext('2d');
+      ctx.drawImage(videoEl, 0, 0, dstW, dstH);   // 把视频画面画进画布
+
+      // toDataURL('image/jpeg', 0.85)：转成 JPEG，质量 0.85（在清晰度和体积之间取平衡）
+      // 返回的样子是 "data:image/jpeg;base64,/9j/4AAQ..."，正好可以直接当接口里的图片地址用
+      return canvas.toDataURL('image/jpeg', 0.85);
+    }
+
+    // 完整的拍照流程：开摄像头 → 等画面 → 稍等一下（让自动对焦/测光稳定）→ 截图
+    async function capturePhoto() {
+      await startCamera();
+      await waitForVideoReady(5000);
+
+      // 刚打开摄像头的那一两帧往往偏黑，等 500 毫秒再拍，成片率更高
+      await new Promise(function (resolve) { setTimeout(resolve, 500); });
+
+      return captureFrame();
+    }
+
+    /* ---------- 第六步：向后端要结果的公共函数 ---------- */
+
+    /* 统一的两句错误提示。所有失败路径都从这里取，用户看到的永远一致。 */
+    const NETWORK_ERROR_MSG = '网络异常，请检查网络连接';
+    const RATE_LIMIT_MSG = '请求太频繁，请稍后再试';
+    const QUOTA_MSG = '今日调用次数已达上限，请明天再试（管理员可在设置面板里调整上限）';
+
+    /* 弹一次错误提示。
+       加这一层的原因：次数超限的提示已经在 postToBackend 里发过了，
+       如果再让下面三个 catch 各发一次，用户会连吃两条一模一样的提示。 */
+    function notifyError(err, fallback) {
+      if (err && err.alreadyNotified) {
+        return;   // 已经提示过了，别再打扰一次
+      }
+      showToast(friendlyMessage(err, fallback));
+    }
+
+    /* 决定这次失败该弹哪句话。
+       平时弹 fallback（识别是“识别失败，请手动添加”，菜谱是“网络异常…”）；
+       但如果服务器是被限流拦下的（429），就弹“请求太频繁”，
+       因为那跟网络没关系，让用户白等或去检查网络是误导。 */
+    function friendlyMessage(err, fallback) {
+      if (err && err.isRateLimited) {
+        return RATE_LIMIT_MSG;
+      }
+      return fallback;
+    }
+
+    // 把一段内容发给自己的后端，拿回服务器给的结果。
+    //   url      ：接口地址（/api/vision 或 /api/chat）
+    //   body     ：要发过去的内容，例如 { image: "..." } 或 { messages: [...] }
+    //   timeoutMs：这次最多等多久
+    //   options  ：可选。目前只认一个字段 skipQuota（见下）
+    // 返回服务器返回的那个对象（例如 { content: "..." } 或 { ingredients: [...] }）。
+    // 只要有任何一步不对，就抛出异常，交给调用方去提示。
+    //
+    // 注意：这里发出的内容里没有 model、没有 Key ——
+    // 那些都由 server.js 决定和保管，网页被偷看也拿不到任何密钥。
+    async function postToBackend(url, body, timeoutMs, options) {
+      var opts = options || {};
+
+      // ★ 出门前先过管理员这道关：今天的次数还没用完吗？★
+      // 放在最前面，是因为它拦下的是「这次请求」，不应该先发出去再算账。
+      // 注意：摄像头拍照失败走不到这里（那一步在 postToBackend 之前就返回了），
+      // 所以「拍失败」不会白白消耗一次额度。
+      //
+      // opts.skipQuota = true → 这一次不计数。
+      // 专门留给「食材一变就自动重新匹配」用：那是网页自己发起的、
+      // 用户根本没点按钮的请求，算进今天的额度里就太冤了 ——
+      // 连着调几次食材，次数就莫名其妙见底了。
+      if (!opts.skipQuota) {
+        if (!consumeQuotaOrBlock()) {
+          var quotaError = new Error(QUOTA_MSG);
+          quotaError.alreadyNotified = true;   // 提示已经发过了，上层不用再发
+          throw quotaError;
+        }
+      }
+
+      // AbortController 是浏览器的“取消开关”：到点就 abort()，
+      // fetch 会立刻中断并抛出异常，这样就不会一直卡在那儿转圈
+      var controller = new AbortController();
+      var timer = setTimeout(function () {
+        controller.abort();
+      }, timeoutMs);
+
+      try {
+        /* 把管理员在设置面板里填的模型和 Key 一起带上。
+           说明：现在的 server.js 只认 messages / action 这些字段，
+           多出来的 model / apiKey 它不会读、也不会用（服务器上的模型和 Key 说了算）。
+           这么做是为了以后想改用得上：到时候在 server.js 里加两行读取即可，
+           网页这边不用再动。本次按要求只改网页，所以现在它们只起「存档」作用。 */
+        var payload = Object.assign({}, body, {
+          model: adminConfig.model,
+          apiKey: adminConfig.apiKey || undefined
+        });
+
+        var response = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+          signal: controller.signal
+        });
+
+        // 服务器出错时会返回 { error: "原因" }，先尽量读出来，
+        // 这样控制台里能看见真正的原因（比如“服务器还没有配置 API Key”）
+        var data = null;
+        try {
+          data = await response.json();
+        } catch (parseErr) {
+          // 回复不是 JSON。最常见的情况有两种：
+          //   · 服务器根本没启动 → 拿到的是浏览器的错误页
+          //   · 被限流拦下 → 也走这里兜底（正常情况下面会是 JSON）
+          data = null;
+        }
+
+        if (!response.ok) {
+          var reason = (data && data.error) ? data.error : ('服务器返回 ' + response.status);
+          var error = new Error(reason);
+          // 429 = 被服务器的限流拦下了。打个标记，好让上层弹“请求太频繁”，
+          // 而不是把用户引去检查网络（那跟网络一点关系都没有）
+          if (response.status === 429) {
+            error.isRateLimited = true;
+          }
+          throw error;
+        }
+
+        if (!data) {
+          throw new Error('服务器返回的不是有效内容');
+        }
+        return data;
+      } finally {
+        // 不管成功还是失败，都要把定时器清掉，否则会留下一个没用的计时任务
+        clearTimeout(timer);
+      }
+    }
+
+    // 顺带把“网络异常”这句话的含义讲清楚，方便你看日志时区分：
+    //   · fetch 直接失败（TypeError）→ 服务器没开 / 断网 / 被防火墙拦
+    //   · AbortError → 等太久了，超时
+    //   · 其余 → 服务器返回了错误，message 里带着原因
+    function describeClientError(err) {
+      if (!err) return '未知错误';
+      if (err.name === 'AbortError') return '请求超时';
+      if (err.name === 'TypeError') return '连不上服务器（服务器没启动？还是断网了？）';
+      return err.message;
+    }
+
+
+    /* ---------- 第七步：从模型回复里“抠”出 JSON ---------- */
+
+    // 试着把字符串解析成 JSON，失败就返回 undefined（不抛错，方便一层层试）
+    function tryParseJson(text) {
+      try {
+        return JSON.parse(text);
+      } catch (err) {
+        return undefined;
+      }
+    }
+
+    // 从模型回复里提取 JSON。
+    // 兜底原因：模型很可能会把 JSON 包在 ```json ... ``` 里，
+    // 或者在前后加一句“好的，这是结果：”，所以要洗一洗再解析。
+    function extractJson(text) {
+      if (typeof text !== 'string') {
+        return null;
+      }
+
+      // 1. 先去掉 ``` 和 ```json 这类代码块围栏
+      var cleaned = text.replace(/```[a-zA-Z]*/g, '').trim();
+
+      // 2. 先赌它本来就是干净的 JSON
+      var parsed = tryParseJson(cleaned);
+      if (parsed !== undefined) {
+        return parsed;
+      }
+
+      // 3. 还不行，就截取最外层的 [ ... ]（食材数组大多是这种）
+      var arrStart = cleaned.indexOf('[');
+      var arrEnd = cleaned.lastIndexOf(']');
+      if (arrStart !== -1 && arrEnd > arrStart) {
+        parsed = tryParseJson(cleaned.slice(arrStart, arrEnd + 1));
+        if (parsed !== undefined) {
+          return parsed;
+        }
+      }
+
+      // 4. 再试 { ... }（菜谱有时会被包成一个对象）
+      var objStart = cleaned.indexOf('{');
+      var objEnd = cleaned.lastIndexOf('}');
+      if (objStart !== -1 && objEnd > objStart) {
+        parsed = tryParseJson(cleaned.slice(objStart, objEnd + 1));
+        if (parsed !== undefined) {
+          return parsed;
+        }
+      }
+
+      return null; // 实在解析不出来
+    }
+
+    // 菜谱结果整理成统一形状的数组：[{ recipe_name, ingredients: [], steps: [] }]
+    // （识别食材的解析已经挪到 server.js 里做了，前端不用再管）
+    function parseRecipes(content) {
+      var json = extractJson(content);
+      if (json === null) {
+        return [];
+      }
+
+      var raw;
+      if (Array.isArray(json)) {
+        raw = json;                                  // 直接就是一个数组
+      } else if (Array.isArray(json.recipes)) {
+        raw = json.recipes;                          // 被包成 { recipes: [...] }
+      } else if (json.recipe_name) {
+        raw = [json];                                // 只返回了一道菜
+      } else {
+        return [];
+      }
+
+      var recipes = [];
+      for (var i = 0; i < raw.length; i++) {
+        var r = raw[i];
+        if (!r || typeof r !== 'object') {
+          continue;
+        }
+        recipes.push({
+          recipe_name: String(r.recipe_name || r.name || ('第 ' + (i + 1) + ' 道菜')),
+          ingredients: toTextList(r.ingredients),
+          steps: toTextList(r.steps)
+        });
+      }
+      return recipes;
+    }
+
+    /* 把“可能是数组、可能是字符串、也可能是对象”的字段，统一整理成字符串数组。
+
+       为什么要这么啰嗦：模型每次返回的形状不一定一样。实测见过这几种：
+         ["火腿", "青椒"]                          → 正常
+         "火腿\n青椒"                              → 换行分隔的字符串
+         [{name:"火腿", amount:"2片"}]             → 对象数组
+         { "火腿":"2片", "青椒":"1个" }             → 对象（名字做键，数量做值）
+         { name:"火腿", amount:"2片" }             → 单个对象
+         { 1:"切丝", 2:"下锅炒" }                   → 步骤写成对象
+       不统统接住的话，页面上就会出现“有菜名但用料空白”的卡片。 */
+    function toTextList(value) {
+      // 情况一：本来就是数组
+      if (Array.isArray(value)) {
+        return cleanTextItems(value);
+      }
+
+      // 情况二：字符串。按换行 / 中文分号 / 英文分号切开
+      if (typeof value === 'string') {
+        return cleanTextItems(value.split(/[\n；;]/));
+      }
+
+      // 情况三：对象
+      if (value && typeof value === 'object') {
+        // 3a. 是 {name:"火腿", amount:"2片"} 这种“单个条目”，直接当成一项
+        if (typeof value.name === 'string' || typeof value.ingredient === 'string') {
+          return cleanTextItems([value]);
+        }
+
+        // 3b. 是 { "火腿":"2片", "青椒":"1个" } 或者 { 1:"切丝", 2:"下锅" } 这种映射表。
+        //     把键和值拼起来：数量看起来像数量就用「名字 数量」，否则只用值本身
+        //     （步骤那种 { 1: "切丝" } 的数字键，拼接键没有意义，只用值）
+        var mapped = [];
+        var keys = Object.keys(value);
+        for (var i = 0; i < keys.length; i++) {
+          var key = keys[i];
+          var val = value[key];
+          if (val === null || val === undefined) {
+            continue;
+          }
+          // 键是纯数字（步骤的序号），只取内容
+          if (/^\d+$/.test(key)) {
+            mapped.push(String(val));
+          } else {
+            mapped.push(key + ' ' + String(val));
+          }
+        }
+        return cleanTextItems(mapped);
+      }
+
+      // 其它情况（null、数字、布尔）一律当空
+      return [];
+    }
+
+    // 把一堆“可能是字符串、也可能是对象”的条目，清洗成干净的字符串数组
+    function cleanTextItems(list) {
+      var result = [];
+      for (var i = 0; i < list.length; i++) {
+        var item = list[i];
+        var text = '';
+
+        if (typeof item === 'string') {
+          text = item;
+        } else if (typeof item === 'number') {
+          text = String(item);
+        } else if (item && typeof item === 'object') {
+          // 形如 {name: "西红柿", amount: "2个"} 的写法，拼成“西红柿 2个”
+          text = String(item.name || item.ingredient || item.ingredients || '') +
+                 (item.amount ? ' ' + item.amount : '');
+        }
+
+        // 去掉开头可能带的“1.”“1、”“- ”这类序号（有序列表自己会显示序号）
+        text = String(text).replace(/^\s*(\d+[.、)]|[-•])\s*/, '').trim();
+        if (text !== '') {
+          result.push(text);
+        }
+      }
+      return result;
+    }
+
+    /* ---------- 第八步之一：给菜谱打分（难易 + 星级） ----------
+
+       为什么要打分：模型返回的菜谱是「一锅端」的，顺序随机，
+       容易把一道要炖一小时的硬菜排在第一个，新手看了就劝退。
+       所以这里给每道菜算一个分数，渲染前按「难度」从低到高排一遍，
+       把最简单快手的顶到最上面。
+
+       ★ 星星代表的是「难度」，不是「推荐度」★
+         1~2 星 = 简单（淡绿标签）
+         3   星 = 中等（淡橙标签）
+         4~5 星 = 困难（淡红标签）
+       所以星星越少越好上手，排得越靠前。
+
+       打分只用两个现成的数字：ingredients.length（用料种数）和 steps.length（步骤数）。
+       为什么只用这两个：模型的 JSON 里就只有这两样是稳定的数字，
+       别的一会儿是字符串一会儿是对象，拿来算分经不起折腾。
+       两个数字都先经过 toCount() 兜底，拿不到就按 0 算，绝不抛错。
+
+       总分 = 食材得分 × 20% + 上手得分 × 40% + 步骤得分 × 40%
+       三项都是 1~5 分，所以总分也在 1~5 之间。
+
+       ★ 这个分数算出来的是「好不好做」，5 分 = 最好做 ★
+         然后由 scoreToStars() 把它翻成「难度星数」：5 分 → 1 星。
+         为什么不在这里直接算成难度分：因为这一个函数的输出
+         已经被下面三项的注释和阈值描述清楚了，改动最小、最不容易改错。
+         想看星星怎么来的，看 scoreToStars() 里那一行翻转换算就够。 */
+    function calculateScore(recipe) {
+      var ingCount = toCount(recipe && recipe.ingredients);
+      var stepCount = toCount(recipe && recipe.steps);
+
+      /* ① 食材多少（占 20%）：用料越少越容易备齐
+            ≤2 种 → 5 分，3~4 种 → 4 分，5~6 种 → 3 分，7~8 种 → 2 分，再多 → 1 分 */
+      var ingredientScore = 5;
+      if (ingCount >= 9) {
+        ingredientScore = 1;
+      } else if (ingCount >= 7) {
+        ingredientScore = 2;
+      } else if (ingCount >= 5) {
+        ingredientScore = 3;
+      } else if (ingCount >= 3) {
+        ingredientScore = 4;
+      }
+
+      /* ② 新手上手程度（占 40%）：看步骤有多复杂。
+           模型的步骤是一句句自然语言，这里从「字数」和「关键词」两个方向估算：
+             字数多 = 一句话里塞了好几个动作，多半要多线程操作
+             出现「腌制、发酵、焯水、翻面、勾芡…」这类词 = 有额外工序，新手容易翻车
+           没有这些信号的基础分是 5 分，再按查到的「麻烦工序」数量扣分。 */
+      var difficultyWords = ['腌制', '发酵', '焯水', '过油', '油炸', '翻面', '勾芡',
+                             '上浆', '收汁', '熬', '焖', '炖', '烤', '打发', '揉面',
+                             '醒面', '隔水', '水浴', '裱花', '拉丝', '复炸'];
+      var troubleCount = 0;      // 查到了几种麻烦工序
+      var longStepCount = 0;     // 有几步写得特别长（≥30 个字）
+
+      var steps = (recipe && Array.isArray(recipe.steps)) ? recipe.steps : [];
+      for (var i = 0; i < steps.length; i++) {
+        var stepText = String(steps[i] == null ? '' : steps[i]);
+
+        if (stepText.replace(/\s/g, '').length >= 30) {
+          longStepCount++;
+        }
+        for (var w = 0; w < difficultyWords.length; w++) {
+          if (stepText.indexOf(difficultyWords[w]) !== -1) {
+            troubleCount++;
+            break;   // 同一步里出现多个词只算一次，免得一步就扣穿
+          }
+        }
+      }
+
+      var beginnerScore = 5 - troubleCount - longStepCount;
+      if (beginnerScore < 1) beginnerScore = 1;
+      if (beginnerScore > 5) beginnerScore = 5;
+
+      /* ③ 步骤麻烦程度（占 40%）：步骤越少越省事
+            ≤3 步 → 5 分，4~5 步 → 4 分，6~7 步 → 3 分，8~9 步 → 2 分，再多 → 1 分 */
+      var stepScore = 5;
+      if (stepCount >= 10) {
+        stepScore = 1;
+      } else if (stepCount >= 8) {
+        stepScore = 2;
+      } else if (stepCount >= 6) {
+        stepScore = 3;
+      } else if (stepCount >= 4) {
+        stepScore = 4;
+      }
+
+      // 按权重加权：0.2 / 0.4 / 0.4。留两位小数，免得浮点数出现 3.4000000000000004
+      var total = ingredientScore * 0.2 + beginnerScore * 0.4 + stepScore * 0.4;
+      return Math.round(total * 100) / 100;
+    }
+
+    /* 把「好做分」翻成「难度星数」（1~5）。
+
+       这里是整个难度体系唯一做翻转的地方：
+         calculateScore 算出来的是「好不好做」——5 分 = 最省事，1 分 = 最麻烦
+         星星要表达的是「难不难做」——    1 星 = 最简单，5 星 = 最难
+       所以两者正好相反，用 6 减一下：好做 5 分 → 1 星，好做 1 分 → 5 星。
+
+       先四舍五入再翻转（不是翻转后再取整），是为了让「好做分 3.5 以上」
+       这一档稳定地落在 2 星，而不是随着小数抖动来回跳。
+       最后夹在 1~5 之间，保证不会算出 0 颗或 6 颗。 */
+    function scoreToStars(score) {
+      var stars = 6 - Math.round(score);
+      if (stars < 1) stars = 1;
+      if (stars > 5) stars = 5;
+      return stars;
+    }
+
+    /* 难易标签。直接跟星数挂钩，保证「星星少 = 标签写简单」永远是同一件事，
+       不会出现「标签写着【困难】却只有一颗星」这种自相矛盾的卡片：
+         1~2 星 → 简单（淡绿）
+         3   星 → 中等（淡橙）
+         4~5 星 → 困难（淡红） */
+    function difficultyOf(score) {
+      var stars = scoreToStars(score);
+      if (stars <= 2) {
+        return { text: '简单', cls: 'difficulty-easy' };
+      }
+      if (stars === 3) {
+        return { text: '中等', cls: 'difficulty-medium' };
+      }
+      return { text: '困难', cls: 'difficulty-hard' };
+    }
+
+    /* 给菜谱算好分数、星数、难易标签，并且按「星数从少到多」排好序       —— 星星最少的就是最简单的，排在最上面，新手一眼就挑得出来。
+
+       返回一个新数组，不改动传进来的原数组 —— 原数组还挂在轮换池上，
+       就地排序会连带改掉那些池子的顺序。 */
+    function rankRecipes(recipes) {
+      if (!Array.isArray(recipes)) {
+        return [];
+      }
+
+      var judged = [];
+      for (var i = 0; i < recipes.length; i++) {
+        var r = recipes[i];
+        var score = calculateScore(r);
+        judged.push({
+          recipe: r,
+          score: score,
+          stars: scoreToStars(score),
+          difficulty: difficultyOf(score)
+        });
+      }
+
+      /* 主排序：星数少的在前（这就是「最简单的排最上面」）。
+         星数一样时再看好做分：分高的更省事，排前面 ——
+         否则同样是 3 星的两道菜，谁上谁下就全看模型返回的运气了。 */
+      judged.sort(function (a, b) {
+        if (a.stars !== b.stars) {
+          return a.stars - b.stars;
+        }
+        return b.score - a.score;
+      });
+      return judged;
+    }
+
+    /* 数一数某个字段里有几项。
+       正常情况是数组，直接取 length；万一模型返回的是字符串或别的形状，
+       就退一步当 0 处理 —— 宁可少算分，也不能让整个渲染挂掉。 */
+    function toCount(value) {
+      if (Array.isArray(value)) {
+        return value.length;
+      }
+      if (typeof value === 'string' && value.trim() !== '') {
+        return 1;
+      }
+      return 0;
+    }
+
+    // 把一个字符重复 n 次。ES6 有 '★'.repeat(n)，这里自己写一个，
+    // 是为了和整个文件「不用新语法」的风格保持一致
+    function repeatChar(ch, n) {
+      var text = '';
+      for (var i = 0; i < n; i++) {
+        text += ch;
+      }
+      return text;
+    }
+
+    // 单独要一道菜的星数时用它。算分 → 折星，两步都在这儿，
+    // 免得别处各写一遍、哪天改了换算规则漏掉一处。
+    function starsOf(recipe) {
+      return scoreToStars(calculateScore(recipe));
+    }
+
+    /* ============================================================
+       第十三步：星级筛选器（右侧「推荐菜谱」上方那条小板块）
+       ------------------------------------------------------------
+       核心思想：★ 过滤只发生在「画」这一步，绝不碰轮换池 ★
+
+       所以这里没有改 pickNextBatch / showBatch 一个字，也没有往
+       recipePool / unseenRecipes / usedRecipes 里塞过任何东西。
+       筛选值换一个、清一次，重新画一遍就是了 —— 所有状态都还是原样。
+
+       两个变量分工：
+         starFilterMin  真正生效的最低星数。0 表示「没设置」，也就是一切照常
+         selectedStars  星星条上当前点亮的颗数。0 表示用户还没点过
+       两者可以不一样：用户点了 4 星但还没按【确定】时，
+       selectedStars = 4 而 starFilterMin 还是旧值 —— 这就是那句
+       「如果用户没有点击这个星星，那么一切照常」的落点。
+       ============================================================ */
+
+    var starFilterMin = 0;    // 生效中的最低星数，0 = 不筛选
+    var selectedStars = 0;    // 星星条上点亮的颗数，0 = 用户还没选
+
+    // 取星星条里的 5 个格子（每格占 1/5 宽，等宽本身就是隐藏分界线）
+    var starCells = starBand.querySelectorAll('.star-cell');
+
+    /* 把星星条画成「前 value 颗亮、后面灰」。
+       value 传 0 就是全灰 —— 鼠标滑出去、又没点过任何一颗时用。 */
+    function paintStars(value) {
+      for (var i = 0; i < starCells.length; i++) {
+        if (i < value) {
+          starCells[i].classList.add('on');
+        } else {
+          starCells[i].classList.remove('on');
+        }
+      }
+      starBand.setAttribute('aria-valuenow', String(value));
+    }
+
+    /* 根据鼠标在星星条里的横向位置，算出这是第几颗星。
+
+       为什么用 Math.ceil(pct * 5)：
+       5 个格子把这条长方形等分成 5 份，鼠标落在第 1 份里 pct 是 0~0.2，
+       乘 5 得 0~1，向上取整正好是 1 —— 也就是「滑到第几格就算第几颗」，
+       完全等于用户看到的隐藏分界线。不必非得点中星星本体。 */
+    function starIndexFromX(clientX) {
+      var rect = starBand.getBoundingClientRect();
+      if (rect.width <= 0) {
+        return selectedStars > 0 ? selectedStars : 1;   // 量不到宽度时兜底
+      }
+      var pct = (clientX - rect.left) / rect.width;
+      var value = Math.ceil(pct * starCells.length);
+      if (value < 1) value = 1;
+      if (value > starCells.length) value = starCells.length;
+      return value;
+    }
+
+    // 右上角那句状态：让用户随时看得出「我选了几星、生效了没」
+    function updateStarFilterState() {
+      if (selectedStars === 0) {
+        starFilterState.textContent = '未选择';
+        return;
+      }
+      if (selectedStars === starFilterMin) {
+        starFilterState.textContent = '最低 ' + selectedStars + ' 星';
+      } else {
+        starFilterState.textContent = '最低 ' + selectedStars + ' 星（待确定）';
+      }
+    }
+
+    // 按当前生效的最低星数筛一遍。没设置（0）时原样返回，一切照常。
+    function filterByStars(list) {
+      return filterByStarsAt(list, starFilterMin);
+    }
+
+    /* 按指定的最低星数筛一遍。单独抽出来是因为【确定】按钮需要
+       「拿用户刚选的星数先试算一下」，而那时 starFilterMin 还是旧值 ——
+       直接用 filterByStars 会拿旧值去算，判断就全错了。 */
+    function filterByStarsAt(list, minStars) {
+      if (!Array.isArray(list)) {
+        return [];
+      }
+      if (minStars <= 0) {
+        return list.slice();
+      }
+      var result = [];
+      for (var i = 0; i < list.length; i++) {
+        if (starsOf(list[i]) >= minStars) {
+          result.push(list[i]);
+        }
+      }
+      return result;
+    }
+
+    /* 【确定】按下之后：随机寻味先按新星级重新匹配；普通模式先判异常，再重画。
+
+       异常判断只关心「有没有一个池子里存在够星的菜」：
+         · 两栏都空的（还没匹配过）→ 提醒先匹配
+         · 一颗够星的都没有：
+             已经解锁过额外菜谱、或者用户已经在解锁框里填了数字
+               → 情况 B（食材 + 解锁数量都不够）
+             否则 → 情况 A（当前食材本身就不支持这么高的星级）
+
+       注意试算用的是 filterByStarsAt(_, selectedStars) 而不是 filterByStars()：
+       后者读的是 starFilterMin，而此刻它还是上一次确定的值 ——
+       拿旧值去判断，用户从 1 星调到 5 星时就会误报。 */
+    function applyStarFilter() {
+      if (selectedStars === 0) {
+        showToast('请先点击星星，选择您希望的最低星级');
+        return;
+      }
+
+      // 随机寻味按新星级重新请求，复用原有防抖取消、排队、限流和结果处理。
+      if (mysteryCheck.checked) {
+        starFilterMin = selectedStars;
+        updateStarFilterState();
+        cancelAutoMatch();
+        matchRecipes(ingredients.slice());
+        return;
+      }
+
+      if (recipePool.length === 0 && extraShownRecipes.length === 0) {
+        showToast('还没有菜谱可以筛选，请先添加食材并点击【✨ 匹配菜谱】');
+        return;
+      }
+
+      var poolMatched = filterByStarsAt(recipePool, selectedStars);
+      var extraMatched = filterByStarsAt(extraShownRecipes, selectedStars);
+
+      if (poolMatched.length === 0 && extraMatched.length === 0) {
+        // 用户是否已经在「额外购买」那里表达了「想再买几道」的意图
+        var wantsToUnlock = extraShownRecipes.length > 0 || extraCountInput.value.trim() !== '';
+
+        if (wantsToUnlock) {
+          // 情况 B：连解锁出来的菜也没达到要求
+          showToast('您的食材和自动添加更多食材品类不够，请您添加更多食材或者说再添加一些食材解锁更高菜谱里更改更高的数字');
+        } else {
+          // 情况 A：当前食材本身就不支持这么高的星级
+          showToast('您的食材目前不支持更高星级的，请您添加一些食材或者在添加一些食材解锁更高菜谱里查看');
+        }
+
+        /* 提示完就把星星条退回「上一次生效的状态」——
+           不是无脑清空：如果之前已经设过 3 星并生效了，这次改 5 星失败，
+           还应该继续用 3 星，否则会出现「右上角写着未选择、菜谱却在筛选」
+           这种自相矛盾的画面。 */
+        selectedStars = starFilterMin;
+        paintStars(selectedStars);
+        updateStarFilterState();
+        return;
+      }
+
+      starFilterMin = selectedStars;
+      updateStarFilterState();
+      refreshStarFilteredViews();
+    }
+
+    /* 把两栏按新的筛选值重画一遍。
+
+       注意这里用的还是「当前这一批」（usedRecipes），
+       没有去池子里另挑一批 —— 所以轮换状态一动不动，
+       点【🔄 换一批】该怎么转还怎么转。
+       筛选结果**不会**被写回任何池子：池子里永远是完整的那批菜，
+       所以就算筛得一道不剩，把星级降回去也还能立刻看到。 */
+    function refreshStarFilteredViews() {
+      // 两栏都传「完整的那一份」进去，过滤统一在 renderRecipes /
+      // renderExtraRecipes 内部做一次，避免同一份数据被筛两遍
+      if (usedRecipes.length > 0) {
+        renderRecipes(usedRecipes);
+      }
+      if (extraShownRecipes.length > 0) {
+        renderExtraRecipes(extraShownRecipes);
+      }
+    }
+
+    /* ---------- 13.x 星星条的鼠标 / 键盘交互 ---------- */
+
+    // 鼠标在星星条上滑动：实时把前 N 颗点亮。
+    // 一旦点过星（selectedStars > 0），就停止这种动态变色，
+    // 固定显示用户选的那几颗 —— 这是需求里明确要的行为。
+    starBand.addEventListener('mousemove', function (event) {
+      if (selectedStars > 0) {
+        return;   // 已经固定了，不再跟着鼠标变
+      }
+      paintStars(starIndexFromX(event.clientX));
+    });
+
+    // 鼠标划出去：没点过就恢复全灰，点过就还原成点的那几颗
+    starBand.addEventListener('mouseleave', function () {
+      paintStars(selectedStars);
+    });
+
+    // 点击：把这一颗固定下来（再点别的可以改）
+    starBand.addEventListener('click', function (event) {
+      // 键盘触发的点击（按回车）没有真实坐标，这时不按位置算，
+      // 用当前已选值，或者退回到第 1 颗
+      if (event.detail === 0) {
+        selectedStars = selectedStars > 0 ? selectedStars : 1;
+      } else {
+        selectedStars = starIndexFromX(event.clientX);
+      }
+      paintStars(selectedStars);
+      updateStarFilterState();
+    });
+
+    // 键盘也能选：Tab 进来后用左右方向键加减，Home / End 直接跳到两端。
+    // 回车 / 空格等于按【确定】，省得再去够鼠标。
+    starBand.addEventListener('keydown', function (event) {
+      var value = selectedStars > 0 ? selectedStars : 0;
+
+      if (event.key === 'ArrowRight' || event.key === 'ArrowUp') {
+        value = Math.min(starCells.length, value + 1);
+      } else if (event.key === 'ArrowLeft' || event.key === 'ArrowDown') {
+        value = Math.max(1, value - 1);
+      } else if (event.key === 'Home') {
+        value = 1;
+      } else if (event.key === 'End') {
+        value = starCells.length;
+      } else if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        applyStarFilter();
+        return;
+      } else {
+        return;   // 别的键不管
+      }
+
+      event.preventDefault();   // 免得方向键把页面滚走
+      selectedStars = value;
+      paintStars(selectedStars);
+      updateStarFilterState();
+    });
+
+    // 【确定】
+    starApplyBtn.addEventListener('click', applyStarFilter);
+
+    // 页面刚打开时星星条是全灰的（5 个 span 都没有 .on）
+    paintStars(0);
+    updateStarFilterState();
+
+    /* ---------- 第八步：把菜谱画到右栏 ---------- */
+
+    /* 造一张菜谱卡片。默认是「折叠」状态：只显示菜名 + 用料，
+       步骤藏在里面，点角标才展开。
+
+       recipe     ：菜谱对象 { recipe_name, ingredients, steps, needToBuy? }
+       index      ：序号（从 1 开始），显示成「1. 西红柿炒蛋」
+       extraBadge ：可选。如果是解锁出来的菜，这里传一行小字，
+                    会显示在用料下面（例如「还需购买：青椒、火腿」）
+       ============================================================ */
+    function createRecipeCard(recipe, index, extraBadge) {
+      var card = document.createElement('article');
+      card.className = 'recipe-item';
+
+      // 这道菜的分和星。算一次，标签和星星都用它，
+      // 保证同一张卡片上「难易标签」和「星星数」永远对得上。
+      var score = calculateScore(recipe);
+      var stars = scoreToStars(score);
+      var difficulty = difficultyOf(score);
+
+      /* --- 第一行：左边菜名，右边「难易标签 + 星星」---
+         外面再套一层 .recipe-item-head 是为了把两边顶到卡片两端；
+         菜名本身的 class 没动（还是 .recipe-item-title），样式也照旧。 */
+      var head = document.createElement('div');
+      head.className = 'recipe-item-head';
+
+      var title = document.createElement('h3');
+      title.className = 'recipe-item-title';
+      title.textContent = (index ? index + '. ' : '') + recipe.recipe_name;
+      head.appendChild(title);
+
+      /* ★ 食材提示灰字：当 hint 字段不为空时，在菜名下方渲染一行灰色小字 ★ */
+      if (recipe.hint && recipe.hint.trim() !== '') {
+        var hintText = document.createElement('div');
+        hintText.className = 'recipe-item-hint';
+        hintText.textContent = recipe.hint;
+        head.appendChild(hintText);
+      }
+
+      /* 菜名旁边那个「加入备菜清单」勾选框。
+         它只负责「勾了没勾」，勾上之后做什么全交给第十六段那套备菜逻辑，
+         卡片本身不认识备菜清单是什么东西 —— 这样两边互不牵连。 */
+      head.appendChild(createPrepCheckbox(recipe));
+
+      // 右边那组小东西
+      var meta = document.createElement('div');
+      meta.className = 'recipe-item-meta';
+
+      // 难易程度标签（【简单】/【中等】/【困难】，各带一点淡背景色）
+      var tag = document.createElement('span');
+      tag.className = 'difficulty-tag ' + difficulty.cls;
+      tag.textContent = difficulty.text;
+      meta.appendChild(tag);
+
+      /* 星星。做成一整排 5 颗：前 N 颗填黄色，剩下的留浅灰，
+         这样一眼就能看出「满分是 5 颗，这道占了几颗」。
+         ★ 记住：这里星星代表难度，越少越简单 ★ */
+      var starBox = document.createElement('span');
+      starBox.className = 'recipe-stars';
+      // 鼠标悬停时说明难度是哪来的，方便以后对照着调权重
+      starBox.title = '难度 ' + stars + '/5（最简单是 1 星）\n' +
+                      '用料 ' + toCount(recipe.ingredients) + ' 种，步骤 ' + toCount(recipe.steps) + ' 步';
+
+      var filled = document.createElement('span');
+      filled.className = 'stars-filled';
+      filled.textContent = repeatChar('★', stars);
+      starBox.appendChild(filled);
+
+      if (stars < 5) {
+        // 空星和亮星是同一种字符，只是颜色不同，所以看起来是完整的一条五星条
+        starBox.appendChild(document.createTextNode(repeatChar('★', 5 - stars)));
+      }
+      meta.appendChild(starBox);
+
+      head.appendChild(meta);
+      card.appendChild(head);
+
+      // --- 第二行：用料（折叠时也看得见）---
+      // 用 "、" 把用料连成一行，比竖排列表省很多高度
+      var ingLine = document.createElement('p');
+      ingLine.className = 'recipe-item-ingredients';
+
+      var ingLabel = document.createElement('span');
+      ingLabel.className = 'ing-label';
+      ingLabel.textContent = '用料：';
+      ingLine.appendChild(ingLabel);
+
+      // 用料文字本身也要用 textContent 拼，接口给的内容不能当代码执行
+      var ingText = recipe.ingredients.length > 0 ? recipe.ingredients.join('、') : '（见步骤）';
+      ingLine.appendChild(document.createTextNode(ingText));
+      card.appendChild(ingLine);
+
+      // --- 可选：解锁出来的菜，额外提示还要买什么 ---
+      if (extraBadge && extraBadge !== '') {
+        var badge = document.createElement('p');
+        badge.className = 'recipe-item-need';
+        badge.textContent = '还需购买：' + extraBadge;
+        card.appendChild(badge);
+      }
+
+      // --- 折叠角标 + 步骤区 ---
+      if (recipe.steps.length > 0) {
+        // 步骤区（默认收起来，靠 .open 这个类来展开）
+        var stepsBox = document.createElement('div');
+        stepsBox.className = 'recipe-steps';
+
+        var stepsLabel = document.createElement('p');
+        stepsLabel.className = 'recipe-steps-label';
+        stepsLabel.textContent = '步骤';
+        stepsBox.appendChild(stepsLabel);
+        stepsBox.appendChild(makeList('ol', recipe.steps));
+
+        // 角标按钮。点一下切换展开/收起，同时换掉按钮上的字
+        var toggle = document.createElement('button');
+        toggle.className = 'recipe-toggle';
+        toggle.type = 'button';
+        toggle.textContent = '👇 查看步骤';
+        toggle.setAttribute('aria-expanded', 'false');
+
+        toggle.addEventListener('click', function () {
+          var opened = stepsBox.classList.toggle('open');
+          toggle.textContent = opened ? '👆 收起' : '👇 查看步骤';
+          toggle.setAttribute('aria-expanded', opened ? 'true' : 'false');
+        });
+
+        card.appendChild(toggle);
+        card.appendChild(stepsBox);
+      }
+
+      return card;
+    }
+
+    // 把一批菜谱画进指定容器（先清空容器）
+    //   container  ：要画进哪个 div
+    //   recipes    ：菜谱数组
+    //   badgeOf    ：可选函数，传进去就用来生成每张卡片的那行小字
+    //
+    // 排序就放在这里，是故意的：
+    //   ① 两栏（现有食材 / 额外购买）都走这个函数，所以「两栏通用」自动成立；
+    //   ② 它是「画」之前的最后一步，轮换池早就算完了 ——
+    //      score 只影响先画谁后画谁，碰不到 unseenRecipes / usedRecipes 那些池子，
+    //      所以【🔄 换一批】挑菜的规则一点没变。
+    function renderRecipeInto(container, recipes, badgeOf) {
+      container.innerHTML = '';
+
+      // rankRecipes 返回的是排好序的新数组，传进来的原数组不受影响
+      var ranked = rankRecipes(recipes);
+
+      for (var i = 0; i < ranked.length; i++) {
+        var recipe = ranked[i].recipe;
+        var badge = badgeOf ? badgeOf(recipe) : '';
+        // 序号按「排完序之后的位置」来编，所以最上面那道永远是 1
+        container.appendChild(createRecipeCard(recipe, i + 1, badge));
+      }
+    }
+
+    // 【现有食材能做】这一栏。
+    // 星级筛选在这里顺手做掉：传进来的还是完整的一批，
+    // 只有「画」的时候才按星数过一遍。
+    function renderRecipes(recipes) {
+      var visible = filterByStars(recipes);
+
+      /* 这一批里一道够星的都没有 —— 明确说一句，别留一片空白。
+         只有在真正设置了星级时才提示（没设置时 visible 就是原样，不会为空）。 */
+      if (visible.length === 0 && starFilterMin > 0) {
+        showRecipePlaceholder('这一批里没有达到 ' + starFilterMin + ' 星的菜。' +
+                              '可以点【🔄 换一批】试试，或者把星级调低一点');
+        return;
+      }
+
+      recipeListEl.classList.add('filled');  // 切成“从上往下排”的布局
+      renderRecipeInto(recipeListEl, visible, null);
+    }
+
+    // 【额外购买食材后能做】这一栏。
+    // 注意这里是「追加」而不是「替换」：每解锁一批就往里加，不覆盖前面的。
+    function appendExtraRecipes(recipes) {
+      /* 先把这一批记进「已解锁」名单，再重画。
+         名单的顺序保持原样（就是到期先后），因为去重和「别再推荐」用的都是这个名单 ——
+         它里面装了什么、什么顺序，和改动前完全一样，去重逻辑一点没动。 */
+      for (var i = 0; i < recipes.length; i++) {
+        extraShownRecipes.push(recipes[i]);
+      }
+
+      // 画的时候才过一遍星级筛选，名单本身不收窄
+      renderExtraRecipes(extraShownRecipes);
+    }
+
+    /* 把「额外购买」那一栏整栏重画一遍，按星数从少到多排（最简单的在最上面）。
+       为什么整栏重画而不是只把新来的这批排序：
+       新解锁的一批里可能有比上一批更简单的菜，如果只排这一批，
+       它就永远压在上一批下面，「最简单的在最上面」就不成立了。
+
+       和 renderRecipes 一样，传进来的应该是「完整的那一份」，
+       星级筛选在函数内部统一做掉 —— 两个栏位保持同一种用法，不容易搞混。 */
+    function renderExtraRecipes(list) {
+      var source = filterByStars(list || extraShownRecipes);
+      extraRecipeListEl.innerHTML = '';
+      var ranked = rankRecipes(source);
+
+      for (var i = 0; i < ranked.length; i++) {
+        var recipe = ranked[i].recipe;
+        var need = recipe.needToBuy || [];
+        var badge = need.length > 0 ? need.join('、') : '';
+        extraRecipeListEl.appendChild(createRecipeCard(recipe, i + 1, badge));
+      }
+
+      /* 一道卡片都没有就整栏收起来。
+         要画的是哪一份由调用方决定，这里只管「有卡片才显示这一栏」，
+         所以筛选把它筛空时整栏会自动消失，不需要调用方再操心。 */
+      extraRecipeSectionEl.hidden = (ranked.length === 0);
+    }
+
+    // 生成「用料」「步骤」这种小标题
+    function makeBlockLabel(text) {
+      var label = document.createElement('p');
+      label.className = 'recipe-block-label';
+      label.textContent = text;
+      return label;
+    }
+
+    // 生成列表：tagName 传 'ul'（无序）或 'ol'（有序）
+    function makeList(tagName, items) {
+      var list = document.createElement(tagName);
+      for (var i = 0; i < items.length; i++) {
+        var li = document.createElement('li');
+        li.textContent = items[i];
+        list.appendChild(li);
+      }
+      return list;
+    }
+
+    /* ---------- 第八步之二：菜谱轮换算法（本次新增，核心逻辑） ----------
+       目标：一次只展示 5 道，点【🔄 换一批】能看到别的，
+             而且保证“这一轮落选的，下一轮一定出现”，不会永远看不到某道菜。
+
+       三个池子：
+         recipePool    总菜品池 —— 后端一共给了多少道菜，全在这儿
+         unseenRecipes 未展示池 —— 还没给用户看过的（优先展示它们）
+         usedRecipes   已展示池 —— 上一轮展示过的（用来补足数量）
+
+       每轮展示完就重算一次：
+         新的 unseenRecipes = 总池里「这一轮没展示的」
+         新的 usedRecipes   = 「这一轮展示了的」
+       这样这一轮落选的，就自动进了下一轮的优先队列。 */
+    var RECIPES_PER_PAGE = 5;   // 一次展示几道
+
+    var recipePool = [];        // 总池
+    var unseenRecipes = [];     // 未展示池
+    var usedRecipes = [];       // 已展示池
+
+    // 额外解锁用到的
+    var MAX_EXTRA_BATCHES = 3;  // 最多解锁 3 批
+    var extraBatchCount = 0;    // 已经解锁了几批
+
+    // 解锁出来、已经画到【🛒 额外购买食材后能做】那一栏里的菜。
+    // 它和 recipePool 是两码事：recipePool 只管上面那栏的轮换，
+    // 这里记的是下面那栏已经展示过什么，用来做去重。
+    var extraShownRecipes = [];
+    // 只保存已经成功解锁的新增食材，避免第二次解锁覆盖第一次的清单。
+    var accumulatedExtraIngredients = [];
+
+    function renderAccumulatedExtraIngredients() {
+      if (!accumulatedExtraIngredientsEl) {
+        accumulatedExtraIngredientsEl = document.createElement('div');
+        accumulatedExtraIngredientsEl.className = 'extra-status';
+        accumulatedExtraIngredientsEl.setAttribute('data-role', 'accumulated-extra-ingredients');
+        extraBox.insertBefore(accumulatedExtraIngredientsEl, extraStatusEl);
+      }
+
+      if (accumulatedExtraIngredients.length === 0) {
+        accumulatedExtraIngredientsEl.hidden = true;
+        accumulatedExtraIngredientsEl.textContent = '';
+        return;
+      }
+
+      accumulatedExtraIngredientsEl.hidden = false;
+      accumulatedExtraIngredientsEl.textContent = '额外食材清单：' +
+        accumulatedExtraIngredients.join('、');
+    }
+
+    function clearAccumulatedExtraIngredients() {
+      accumulatedExtraIngredients.length = 0;
+      renderAccumulatedExtraIngredients();
+    }
+
+    /* 基础调料库：解锁出来的菜，用料里如果只有这些，就不算“需要额外购买”。
+       注意是“再次过滤”—— 提示词里已经叮嘱过模型了，但模型不一定每次都听话。 */
+    const SEASONING_LIBRARY = [
+      '盐', '油', '食用油', '植物油', '橄榄油', '酱油', '生抽', '老抽',
+      '醋', '陈醋', '白醋', '香醋', '糖', '白糖', '冰糖', '红糖',
+      '葱', '小葱', '大葱', '葱花', '葱段', '姜', '生姜', '姜片', '姜末',
+      '蒜', '大蒜', '蒜末', '蒜片', '蒜瓣',
+      '料酒', '黄酒', '白酒', '啤酒', '淀粉', '生粉', '水淀粉',
+      '胡椒粉', '白胡椒粉', '黑胡椒粉', '花椒', '花椒粉', '八角', '桂皮', '香叶',
+      '干辣椒', '辣椒面', '辣椒粉', '孜然', '孜然粉', '五香粉', '十三香',
+      '味精', '鸡精', '蚝油', '香油', '芝麻油', '芝麻', '豆瓣酱', '番茄酱',
+      '甜面酱', '黄豆酱', '辣椒酱', '蜂蜜', '清水', '水', '热水', '温水', '高汤', '开水',
+    ];
+
+    // 把 “土豆 2个” / “生抽（可选）” 这种写法，还原成干净的食材名 “土豆” / “生抽”
+    function normalizeIngredientName(text) {
+      var name = String(text || '');
+      name = name.replace(/[（(][^）)]*[）)]/g, '');      // 去掉括号里的备注
+      name = name.replace(/[0-9０-９./／]+/g, '');        // 去掉数字和斜杠
+      name = name.replace(/(适量|少许|若干|少量|一些|半个|个|克|千克|斤|两|勺|汤匙|茶匙|杯|根|颗|只|片|块|瓣|把|条|段|ml|g|kg)/gi, '');
+      name = name.replace(/[\s、,，。.]/g, '');           // 去掉空格和标点
+      return name;
+    }
+
+    // 判断一项用料是不是“基础调料”
+    function isSeasoning(text) {
+      var name = normalizeIngredientName(text);
+      if (name === '') {
+        return true;   // 空字符串当调料处理，反正也不显示
+      }
+      // 完全等于某个调料名
+      if (SEASONING_LIBRARY.indexOf(name) !== -1) {
+        return true;
+      }
+      // 「蒜末」「姜片」这类：把结尾的形态字去掉再看看。
+      // 只对“X末/X片/X丝/X段”这种后缀剥一层，避免把“葱油饼”之类的误判成调料
+      var base = name.replace(/(末|片|丝|段|块|粒|蓉|泥)$/, '');
+      if (base !== name && SEASONING_LIBRARY.indexOf(base) !== -1) {
+        return true;
+      }
+      return false;
+    }
+
+    // 从一份用料清单里挑出“真正需要额外购买的”。
+    // 要排除两类东西：
+    //   ① 基础调料（盐、油、葱姜蒜……）—— 不算买食材
+    //   ② 用户已经拥有的食材 —— 家里有鸡蛋，就不该把鸡蛋写在“需要额外购买”里，
+    //      不然会显得很蠢（用户的原话）。提示词里已经叮嘱过模型，
+    //      但模型不一定每次都听话，所以这里必须自己再过滤一遍。
+    function pickExtraToBuy(list, ownedList) {
+      var owned = ownedList || [];
+      var result = [];
+      for (var i = 0; i < list.length; i++) {
+        var item = list[i];
+        if (isSeasoning(item)) {
+          continue;   // 调料，跳过
+        }
+        var name = normalizeIngredientName(item);
+        if (name === '') {
+          continue;
+        }
+        // 用户已经有同名的食材吗？（用规范化后的名字比，避免“土豆 2个”对不上“土豆”）
+        var alreadyOwned = false;
+        for (var j = 0; j < owned.length; j++) {
+          if (normalizeIngredientName(owned[j]) === name) {
+            alreadyOwned = true;
+            break;
+          }
+        }
+        if (!alreadyOwned) {
+          result.push(item);
+        }
+      }
+      return result;
+    }
+
+    // 彻底重置轮换状态（食材列表变了、或者用户点重新匹配时调用）
+    function resetRecipeRotation() {
+      recipePool = [];
+      unseenRecipes = [];
+      usedRecipes = [];
+      extraShownRecipes = [];      // 第二栏也一起清空
+      clearAccumulatedExtraIngredients();
+      extraBatchCount = 0;
+      recipeActionsEl.hidden = true;
+      btnShuffle.hidden = true;
+      extraHint.hidden = true;
+      extraStatusEl.hidden = true;
+      btnUnlock.disabled = false;
+      extraCountInput.disabled = false;
+      extraCountInput.value = '';
+
+      // 第二栏整体藏起来，里面的卡片也清掉
+      extraRecipeListEl.innerHTML = '';
+      extraRecipeSectionEl.hidden = true;
+    }
+
+    // 把整个总池重新装进轮换状态（第一次匹配出结果时调用）
+    function seedRecipePool(recipes) {
+      recipePool = recipes.slice();
+      unseenRecipes = recipes.slice();   // 一开始全都没看过
+      usedRecipes = [];
+      extraBatchCount = 0;
+      btnUnlock.disabled = false;
+      extraCountInput.disabled = false;
+      extraCountInput.value = '';
+      recipeActionsEl.hidden = false;
+    }
+
+    // 洗牌：把数组随机打乱（返回新数组，不动原来的）。
+    // 用 Fisher–Yates 算法，比 sort(() => Math.random() - 0.5) 更均匀。
+    function shuffleArray(arr) {
+      var copy = arr.slice();
+      for (var i = copy.length - 1; i > 0; i--) {
+        var j = Math.floor(Math.random() * (i + 1));
+        var tmp = copy[i];
+        copy[i] = copy[j];
+        copy[j] = tmp;
+      }
+      return copy;
+    }
+
+    /* 挑出这一轮要展示的菜。
+       规则：先从「未展示池」里按顺序拿，拿不够 RECIPES_PER_PAGE 道，
+             再从「已展示池」里随机抽，补足为止。 */
+    function pickNextBatch() {
+      var batch = [];
+
+      // 1. 优先未展示的（按原顺序，保证漏掉的那道下一轮必出）
+      for (var i = 0; i < unseenRecipes.length && batch.length < RECIPES_PER_PAGE; i++) {
+        batch.push(unseenRecipes[i]);
+      }
+
+      // 2. 不够就从上一轮展示过的里面随机补
+      if (batch.length < RECIPES_PER_PAGE) {
+        var shuffledUsed = shuffleArray(usedRecipes);
+        for (var k = 0; k < shuffledUsed.length && batch.length < RECIPES_PER_PAGE; k++) {
+          batch.push(shuffledUsed[k]);
+        }
+      }
+
+      return batch;
+    }
+
+    // 用菜名做标识，判断“是不是同一道菜”（比整段文本比对更稳）
+    function recipeKey(recipe) {
+      return String(recipe && recipe.recipe_name || '').replace(/\s/g, '');
+    }
+
+    /* 展示一轮。
+       展示完立刻重算两个池子 —— 这是“计算循环”的关键一步：
+         新的 used   = 这一轮展示的
+         新的 unseen = 总池里这一轮没展示的（它们下一轮优先出） */
+    function showBatch() {
+      var batch = pickNextBatch();
+      if (batch.length === 0) {
+        return;
+      }
+
+      renderRecipes(batch);
+      updateExtraHint();
+
+      var shownKeys = [];
+      for (var i = 0; i < batch.length; i++) {
+        shownKeys.push(recipeKey(batch[i]));
+      }
+
+      usedRecipes = batch;
+      unseenRecipes = [];
+      for (var j = 0; j < recipePool.length; j++) {
+        if (shownKeys.indexOf(recipeKey(recipePool[j])) === -1) {
+          unseenRecipes.push(recipePool[j]);
+        }
+      }
+
+      // 只有当池子里还有没展示过的菜时，「换一批」才有意义。
+      // 池子 ≤5 道时转了也是同样这几道，所以直接藏起来（也满足“1-2 道时隐藏”的要求）。
+      btnShuffle.hidden = (unseenRecipes.length === 0);
+      btnShuffle.disabled = (unseenRecipes.length === 0);
+    }
+
+    // 更新那句“已经展示了所有能做的菜”的提示文字
+    function updateExtraHint() {
+      if (recipePool.length <= RECIPES_PER_PAGE) {
+        extraHint.textContent = '根据您的食材，已经展示了所有能做的菜。' +
+          '如果您需要，可以点击下方的【需要额外购买食材解锁更多】按钮。';
+        extraHint.hidden = false;
+      } else {
+        extraHint.hidden = true;
+      }
+    }
+
+    /* ---------- 第九步：两个真正干活的函数 ---------- */
+
+    // 【拍照识别】
+    // 传 null（按钮调用时就是这样）→ 自己开摄像头拍一张
+    // 传 data:image/jpeg;base64,... 字符串 → 直接用这张图（以后想做“上传图片”功能就传它）
+    async function recognizeImage(base64Image) {
+      if (!checkEnvironment()) {
+        return;
+      }
+
+      var dataUrl = base64Image;
+
+      // 1. 没有现成的图 → 开摄像头拍一张
+      //    capturePhoto() 里面已经做完了：开摄像头 → 等画面 → 缩到宽 800px → 转 JPEG → 转 Base64
+      if (!dataUrl) {
+        beginBusy(recognizeBtn, '正在开摄像头…');
+        try {
+          dataUrl = await capturePhoto();
+        } catch (err) {
+          // 摄像头问题（没权限、没设备、被占用）单独提示，别跟网络错误混在一起。
+          // 用 console.warn：这类情况已经处理过了，属于“预料之中”，不是代码 bug，
+          // 所以控制台里是黄色的提示而不是红色报错
+          console.warn('摄像头不可用（已提示用户）：', err);
+          showToast('无法使用摄像头，请检查浏览器权限或摄像头是否被占用');
+          return;
+        } finally {
+          // 不管拍没拍到，先让按钮回到“拍下这张”的可点状态
+          endBusy(recognizeBtn, recognizeIdleLabel);
+        }
+
+        // 拍成功了：按钮上这句话提醒用户“可以再拍一张”
+        recognizeIdleLabel = '📸 拍下这张';
+        recognizeBtn.textContent = recognizeIdleLabel;
+      }
+
+      // 2. 把图片发给本地的 /api/vision 接口
+      //    这里只发图片本身，不发 Key —— Key 在服务器那边，网页碰不到。
+      //    提示词也写在服务器里，网页这边不用管。
+      beginBusy(recognizeBtn, '思考中…');
+      try {
+        var result = await postToBackend(API_VISION_URL, { image: dataUrl }, VISION_TIMEOUT);
+        var names = result.ingredients;
+
+        // 服务器说成功了，但一个食材都没给（理论上不会发生，防一手）
+        if (!Array.isArray(names) || names.length === 0) {
+          throw new Error('接口没有返回食材');
+        }
+
+        // 3. 自动填入“已添加食材”，由 addIngredient 负责去重。
+        //    silent = true：批量添加时不逐个弹“该食材已添加”，否则识别到 5 个重复的会弹 5 次窗
+        var addedNames = [];
+        for (var i = 0; i < names.length; i++) {
+          if (addIngredient(names[i], true)) {
+            addedNames.push(names[i]);
+          }
+        }
+
+        // 4. 给用户一句反馈：新加进来的报个数，全是重复的就说明一下
+        if (addedNames.length > 0) {
+          showToast('识别到 ' + addedNames.length + ' 种食材：' + addedNames.join('、'));
+        } else {
+          showToast('识别到的食材都已经在列表里了');
+        }
+      } catch (err) {
+        // 失败就只提示，绝不往界面上填任何编造的食材。
+        // 控制台里打出真正的原因（服务器没开 / 超时 / 接口 500），
+        // 但弹给用户的话永远是一句，免得出现看不懂的技术名词。
+        console.warn('识别食材失败：' + describeClientError(err));
+        notifyError(err, '识别失败，请手动添加');
+      } finally {
+        endBusy(recognizeBtn, recognizeIdleLabel);
+      }
+    }
+
+    // 【匹配菜谱】—— 拿到的一整批菜会全部存进总池，然后只展示前 5 道。
+    //  list：用户已添加的食材数组，例如 ['西红柿', '鸡蛋']
+    //  options：可选。
+    //    auto = true 表示这是「食材一变自动触发的」，不是用户点的。
+    //    自动模式有两处不同：① 不消耗每日额度  ② 按钮和提示的说法不一样
+    async function matchRecipes(list, options) {
+      var opts = options || {};
+
+      if (!checkEnvironment()) {
+        return;
+      }
+
+      /* 没食材一般不给匹配，但「我不知道要吃什么」是例外：
+         那种模式本来就允许空着手，交给大厨随便推荐。 */
+      if ((!list || list.length === 0) && !mysteryCheck.checked) {
+        showToast('请先添加食材');
+        return;
+      }
+
+      /* 已经在发请求了：不叠加第二个（两份结果会互相覆盖）。
+         把这次记成「待办」—— 等当前请求一结束，立刻用最新的食材再跑一次。
+         记的是参数本身而不是一个标记：排队期间食材可能又变了，
+         真正该发的是「发请求那一刻的食材」。 */
+      if (matchInFlight) {
+        pendingMatchOptions = { list: list.slice(), auto: !!opts.auto };
+        return;
+      }
+
+      matchInFlight = true;
+      var requestEpoch = ingredientsEpoch;   // 记下这次请求对应的「食材第几版」
+      beginBusy(matchBtn, opts.auto ? '食材变了，重新匹配…' : '思考中…');
+      showRecipePlaceholder('正在为你构思菜谱…');   // 加载提示，不是假数据
+      resetRecipeRotation();                        // 重新匹配 = 轮换状态清零
+
+      try {
+        /* 组装提示词。
+           第一部分是基础指令：只准用用户有的主食材，只返回 JSON。
+           注意这里让模型「尽量多给几道」（最多 8 道），是为了让总池足够大，
+           【🔄 换一批】才有东西可换。能不能凑够由模型按实际情况决定，
+           凑不够也没关系，前端会照实全展示，绝不编造假菜。
+           第二部分是调料豁免：只有勾选了「我家有基础调料」时才追加一句。 */
+        var prompt = '用户只拥有以下主食材：' + list.join('、') +
+          '。请只使用这些主食材，推荐最多8道简单可行的家常菜' +
+          '（能想出几道就给几道，如果只能做1道就返回1道，不要强凑，也不要重复）。' +
+          '绝对禁止引入用户没有的主食材（如火腿、青椒等）。' +
+          '返回纯JSON格式，包含 recipe_name, ingredients, steps。';
+
+        if (seasoningCheck.checked) {
+          prompt += '用户已拥有盐、油、酱油等基础调料，不需要额外购买，也不要把它们列为缺少的主食材。';
+        }
+
+        /* 第四个参数决定这次算不算进今日额度：
+           自动匹配传 true，也就是「不计数」—— 它是网页自己发起的，
+           用户没点任何按钮，算进去会让额度莫名其妙地见底。 */
+        var isMystery = mysteryCheck.checked;
+
+        var result = await postToBackend(
+          API_CHAT_URL,
+          {
+            messages: [{ role: 'user', content: prompt }],
+            /* 随机寻味标记：勾了才带上，没勾就是 false。
+               后端只认 isMysteryMode === true，不传等于关闭，
+               所以这个字段对普通匹配毫无影响。 */
+            isMysteryMode: isMystery,
+            /* 勾了随机寻味时，把食材原样交给后端自己拼提示词
+               （上面那份 prompt 后端会丢掉不用）。
+               平时不传，免得平白多两个字段。 */
+            ingredients: isMystery ? list : undefined,
+            hasSeasonings: isMystery ? seasoningCheck.checked : undefined,
+            /* 把「生效中的最低星级」也告诉后端（见 starFilterMin 的说明）。
+               为什么必须传：星级是网页这边算的（rankRecipes → scoreToStars），
+               模型自己看不见这个分数。如果不说，它只会按「家常菜」泛泛地给，
+               结果多半是 1~2 星的简单菜 —— 用户设了最低 3 星的话，
+               这些菜会被 filterByStars 全部筛掉，屏幕上就一道都不剩了。
+               传过去，提示词才能明确要求「按这个难度来推荐」。
+               0 表示用户没设星级，后端会照常按「简单好做」来要。 */
+            minStars: isMystery ? starFilterMin : undefined
+          },
+          CHAT_TIMEOUT,
+          { skipQuota: !!opts.auto }
+        );
+
+        /* 等回来的这段时间里，食材变过吗？变过就说明手上这份菜谱
+           对应的已经不是最新的食材了 —— 画上去会让用户看到
+           「推荐里还有自己刚删掉的那个食材」。直接丢弃。
+
+           两种情况都会在这里被挡住：
+             · 食材变了、也排上了新的匹配（pendingMatchOptions 有值）
+             · 食材变了、但新匹配还在那 500 毫秒的等待期里
+               （pendingMatchOptions 还是空的，靠版本号才发现得了） */
+        if (pendingMatchOptions || ingredientsEpoch !== requestEpoch) {
+          console.warn('这份菜谱已经过时（等待期间食材变了），丢弃不用');
+          return;
+        }
+
+        var recipes = parseRecipes(result.content);
+
+        if (recipes.length === 0) {
+          throw new Error('没能从回复里解析出菜谱：' + String(result.content).slice(0, 200));
+        }
+
+        // 存进总池，然后展示第一轮（最多 5 道）。
+        // 超过 5 道时，剩下的会自动进“未展示池”，点【🔄 换一批】就能看到。
+        seedRecipePool(recipes);
+        showBatch();
+      } catch (err) {
+        /* 失败：清干净菜谱区（回到空状态），只提示，不显示任何假菜谱。
+           用 console.warn 而不是 console.error —— 断网、超时这类都是
+           “已经预料到并且已经处理过”的情况，不是代码 bug。
+           warn 在 F12 里是黄色，这样控制台就不会出现吓人的红色报错，
+           但排查问题时照样能从控制台看到具体原因。 */
+        console.warn('匹配菜谱失败：' + describeClientError(err));
+        showRecipePlaceholder('暂无推荐，请先添加食材');
+        resetRecipeRotation();
+        notifyError(err, NETWORK_ERROR_MSG);
+      } finally {
+        matchInFlight = false;
+        endBusy(matchBtn, '✨ 匹配菜谱');
+
+        /* 排队期间用户又改了食材 / 又点了按钮吗？立刻补发最新那一次。
+           放在 finally 里，是为了保证不管上一次成功、失败还是被丢弃，
+           这份待办都不会被漏掉。 */
+        if (pendingMatchOptions) {
+          var next = pendingMatchOptions;
+          pendingMatchOptions = null;
+          matchRecipes(next.list, { auto: next.auto });
+        }
+      }
+    }
+
+    // 【🔄 换一批】—— 不重新请求接口，只在已有的总池里轮换。
+    // 因为数据是现成的，所以是瞬时的，不用“思考中…”。
+    function shuffleRecipes() {
+      if (unseenRecipes.length === 0) {
+        return;   // 已经没有没展示过的菜了，按钮本来就是藏着的，这里再防一手
+      }
+      showBatch();
+    }
+
+    // 只用于额外解锁的食材去重，不改变其他功能的食材规范化规则。
+    function unlockIngredientName(item) {
+      var text = typeof item === 'string' ? item : (item && (item.name || item.ingredient));
+      if (typeof text !== 'string') return '';
+      var name = text.replace(/[（(][^）)]*[）)]/g, '').trim();
+      var previous;
+      do {
+        previous = name;
+        name = name.replace(/\s*(?:约)?[0-9０-９一二三四五六七八九十百半.]+\s*(?:千克|公斤|克|kg|g|斤|两|个|根|颗|只|片|块|瓣|把|条|段|袋|盒|毫升|ml)\s*$/i, '');
+      } while (name !== previous);
+      name = name.replace(/\s*(?:适量|少许|若干|少量)\s*$/, '').replace(/\s/g, '');
+      name = name.replace(/(?:切)?(?:末|片|丝|段|块|丁|粒)$/, '');
+      var aliases = { 番茄: '西红柿', 马铃薯: '土豆', 洋芋: '土豆', 花椰菜: '菜花',
+                      猪肉丝: '猪肉', 猪肉片: '猪肉', 猪肉末: '猪肉', 瘦猪肉: '猪肉',
+                      牛肉丝: '牛肉', 牛肉片: '牛肉', 牛肉末: '牛肉' };
+      return aliases[name] || name;
+    }
+
+    function isForbiddenUnlockIngredient(name) {
+      return isSeasoning(name) || /(?:油|盐|酱油|调味料|调味粉)$/.test(name) ||
+        /大米|米饭|生米|粳米|籼米|糯米|香米|小米(?!椒)|面条|挂面|拉面|意面|意大利面|方便面|面粉|馒头|包子|饺子|馄饨|面包(?!蟹)|米粉|米线|河粉|粉丝|粉条|年糕|粥|麦片|燕麦|玉米面|藜麦/.test(name) ||
+        /^(?:米|面|饼)$/.test(name);
+    }
+
+    function buildUnlockExclusions() {
+      var excluded = [];
+      var accumulated = typeof accumulatedExtraIngredients === 'undefined'
+        ? [] : accumulatedExtraIngredients;
+      var items = ingredients.slice().concat(accumulated);
+      for (var i = 0; i < extraShownRecipes.length; i++) {
+        items = items.concat(extraShownRecipes[i].needToBuy || []);
+      }
+      for (var j = 0; j < items.length; j++) {
+        var name = unlockIngredientName(items[j]);
+        if (name && excluded.indexOf(name) === -1) excluded.push(name);
+      }
+      return excluded;
+    }
+
+    function validateUnlockIngredients(data, excluded, count) {
+      var accepted = [];
+      var raw = data && data.extra_ingredients;
+      var invalid = !Array.isArray(raw);
+      if (Array.isArray(raw)) {
+        for (var i = 0; i < raw.length; i++) {
+          var name = unlockIngredientName(raw[i]);
+          if (typeof raw[i] !== 'string' || !name || /[、,，;；/或]/.test(name) ||
+              isForbiddenUnlockIngredient(name) || excluded.indexOf(name) !== -1 ||
+              accepted.indexOf(name) !== -1) {
+            invalid = true;
+            continue;
+          }
+          accepted.push(name);
+        }
+      }
+      return { ingredients: accepted, valid: !invalid && accepted.length === count };
+    }
+
+    /* 【🛒 需要额外购买食材解锁更多】
+       排除原有及历史新增食材，核验本次正好 N 种新食材后才追加菜谱。 */
+    async function unlockMoreRecipes() {
+      if (!checkEnvironment()) {
+        return;
+      }
+
+      if (ingredients.length === 0) {
+        showToast('请先添加食材');
+        return;
+      }
+
+      // --- 1. 校验用户输入的 N（1~5 道，上限跟着后端一起放宽了）---
+      var raw = extraCountInput.value.trim();
+      var n = Number(raw);
+      if (raw === '' || !isFinite(n) || Math.floor(n) !== n || n < 1 || n > 5) {
+        showToast('请输入 1 到 5 之间的整数');
+        extraCountInput.focus();
+        return;
+      }
+
+      if (extraBatchCount >= MAX_EXTRA_BATCHES) {
+        return;   // 已经解锁满 3 批了
+      }
+      if (btnUnlock.disabled) return;
+
+      beginBusy(btnUnlock, '思考中…');
+      extraStatusEl.hidden = true;
+      extraCountInput.disabled = true;
+
+      try {
+        /* 把已经出现过的菜名也告诉模型，让它别再出重复的。
+           包括两部分：① 上面那栏轮换池里的  ② 下面那栏已经解锁出来的。
+           只发菜名不发整份菜谱，能省不少流量。 */
+        var existingNames = recipePool.map(function (r) {
+          return r.recipe_name;
+        });
+        for (var e = 0; e < extraShownRecipes.length; e++) {
+          existingNames.push(extraShownRecipes[e].recipe_name);
+        }
+
+        var excludedIngredients = buildUnlockExclusions();
+        // 本批新食材由后端生成；先传完整已有上下文，再由模型合并本批新增食材。
+        var allIngredients = excludedIngredients.slice();
+        var requestEpoch = ingredientsEpoch;
+        var requestExtraRecipes = extraShownRecipes;
+        var result = await postToBackend(API_CHAT_URL, {
+          action: 'unlock',                       // 告诉后端这次是“解锁”场景
+          ingredients: ingredients.slice(),       // 用户已有的食材
+          extraCount: n,                          // 本次新增食材的严格数量
+          excludeRecipes: existingNames,          // 已经推荐过的菜名，别再重复
+          excludeIngredients: excludedIngredients, // 仅用于排除重复购买
+          allIngredients: allIngredients           // 原有食材 + 全部历史解锁食材，可用于搭配
+        }, CHAT_TIMEOUT);
+
+        if (ingredientsEpoch !== requestEpoch || extraShownRecipes !== requestExtraRecipes) {
+          showToast('食材或菜谱已变化，请重新解锁');
+          return;
+        }
+        var unlockData = extractJson(result.content);
+        var checked = validateUnlockIngredients(unlockData, excludedIngredients, n);
+        if (!checked.valid) {
+          extraStatusEl.textContent = '本批数量或分类不合格，已过滤无效项；有效新增 ' +
+            checked.ingredients.length + ' 味，要求正好 ' + n + ' 味；本批未追加，请重新生成';
+          extraStatusEl.hidden = false;
+          return;
+        }
+        var newRecipes = parseRecipes(result.content);
+        if (newRecipes.length === 0) {
+          extraStatusEl.textContent = '本批没有可用的菜谱，请重新生成';
+          extraStatusEl.hidden = false;
+          return;
+        }
+
+        // --- 2. 去重：两栏里已经出现过的菜都不要 ---
+        var existingKeys = [];
+        for (var i = 0; i < recipePool.length; i++) {
+          existingKeys.push(recipeKey(recipePool[i]));
+        }
+        for (var q = 0; q < extraShownRecipes.length; q++) {
+          existingKeys.push(recipeKey(extraShownRecipes[q]));
+        }
+
+        var fresh = [];
+        for (var j = 0; j < newRecipes.length; j++) {
+          var r = newRecipes[j];
+          if (existingKeys.indexOf(recipeKey(r)) !== -1) {
+            continue;   // 总池里已经有了，跳过
+          }
+
+          var needToBuy = [];
+          var invalidRecipe = false;
+          for (var k = 0; k < r.ingredients.length; k++) {
+            var ingredient = unlockIngredientName(r.ingredients[k]);
+            if (!ingredient || /[、,，;；/或]/.test(ingredient)) {
+              invalidRecipe = true;
+              break;
+            }
+            if (excludedIngredients.indexOf(ingredient) !== -1 || isSeasoning(ingredient)) continue;
+            if (isForbiddenUnlockIngredient(ingredient) || checked.ingredients.indexOf(ingredient) === -1) {
+              invalidRecipe = true;
+              break;
+            }
+            if (needToBuy.indexOf(ingredient) === -1) needToBuy.push(ingredient);
+          }
+          if (invalidRecipe || r.steps.length === 0 || needToBuy.length === 0) continue;
+          r.needToBuy = needToBuy;
+
+          fresh.push(r);
+          existingKeys.push(recipeKey(r));   // 顺手塞进去，防止这批内部自己重复
+        }
+
+        if (fresh.length === 0) {
+          extraStatusEl.textContent = '已剔除重复或含无效食材的菜谱，本批没有新的可用菜谱，请重新生成';
+          extraStatusEl.hidden = false;
+          return;
+        }
+
+        // 所有保留菜谱的新增用料合计也必须恰好覆盖本次 X 味食材。
+        var allNeed = [];
+        for (var a = 0; a < fresh.length; a++) {
+          for (var b = 0; b < fresh[a].needToBuy.length; b++) {
+            var item = fresh[a].needToBuy[b];
+            if (allNeed.indexOf(item) === -1) {
+              allNeed.push(item);
+            }
+          }
+        }
+        if (allNeed.length !== n) {
+          extraStatusEl.textContent = '剔除无效菜谱后仅覆盖 ' + allNeed.length + ' 味新增食材，要求正好 ' + n + ' 味；本批未追加，请重新生成';
+          extraStatusEl.hidden = false;
+          return;
+        }
+
+        // 只有菜谱与本批新增食材完全对应时，才提交这批累计状态。
+        for (var c = 0; c < checked.ingredients.length; c++) {
+          if (allNeed.indexOf(checked.ingredients[c]) === -1) {
+            extraStatusEl.textContent = '本批菜谱未完整覆盖新增食材，本批未追加，请重新生成';
+            extraStatusEl.hidden = false;
+            return;
+          }
+        }
+
+        if (typeof accumulatedExtraIngredients !== 'undefined') {
+          for (var d = 0; d < checked.ingredients.length; d++) {
+            if (accumulatedExtraIngredients.indexOf(checked.ingredients[d]) === -1) {
+              accumulatedExtraIngredients.push(checked.ingredients[d]);
+            }
+          }
+          if (typeof renderAccumulatedExtraIngredients === 'function') {
+            renderAccumulatedExtraIngredients();
+          }
+        }
+
+        appendExtraRecipes(fresh);
+        extraBatchCount++;
+
+        var msg = '本批新增 ' + n + ' 味食材、' + fresh.length + ' 道菜';
+        if (allNeed.length > 0) {
+          msg += '，需要额外购买：' + allNeed.join('、');
+        } else {
+          msg += '，只用现有食材就能做';
+        }
+        msg += '（已解锁 ' + extraBatchCount + '/' + MAX_EXTRA_BATCHES + ' 批）';
+        extraStatusEl.textContent = msg;
+        extraStatusEl.hidden = false;
+
+        // 解锁满 3 批就置灰，不再让点
+        if (extraBatchCount >= MAX_EXTRA_BATCHES) {
+          btnUnlock.disabled = true;
+          extraCountInput.disabled = true;
+          extraStatusEl.textContent += '——已达上限，不能再解锁了';
+        }
+      } catch (err) {
+        console.warn('解锁更多菜谱失败：' + describeClientError(err));
+        extraStatusEl.hidden = true;
+        notifyError(err, NETWORK_ERROR_MSG);
+      } finally {
+        // 注意：endBusy 会把按钮恢复成可点，所以“已达上限”的情况要在它之后再处理一次
+        endBusy(btnUnlock, '🛒 需要额外购买食材解锁更多');
+        if (extraBatchCount >= MAX_EXTRA_BATCHES) {
+          btnUnlock.disabled = true;
+        } else {
+          extraCountInput.disabled = false;
+        }
+      }
+    }
+
+    /* ============================================================
+       第十二步：管理员系统
+       ------------------------------------------------------------
+       为什么这段排在上面「第十步」前面：管理员系统自成一体，
+       不依赖食材、菜谱那些逻辑，所以就近放在这里，读代码时不用翻到最后。
+       执行顺序不受影响（函数声明会整体先被浏览器读一遍）。
+       下面 12.1、12.2…… 是本模块自己的小节编号。
+
+       三件事：
+         ① 连点顶部标题 5 次（每次间隔不超过 1 秒）→ 直接打开设置面板
+         ② 设置存在 localStorage，页面加载时优先读它，没有才用默认值
+         ③ 每次调用 API 前先查今天的次数，超了就拦下来；
+            日期变了（过了 0 点）就自动从 0 重新数
+       ============================================================ */
+
+    /* ---------- 12.1 当天日期 ---------- */
+
+    // 返回 "2026-09-27" 这种字符串，用来判断“是不是同一天”。
+    // 刻意用本地时区的年月日拼，而不是 toISOString()——
+    // 后者用的是 UTC 时间，中国这边 0 点前后会差 8 小时，日期就对不上了。
+    function todayString() {
+      var d = new Date();
+      var month = String(d.getMonth() + 1).padStart(2, '0');   // 月份从 0 数起，要 +1
+      var day = String(d.getDate()).padStart(2, '0');
+      return d.getFullYear() + '-' + month + '-' + day;
+    }
+
+    /* ---------- 12.2 设置：读、存、用 ---------- */
+
+    // 把 localStorage 里的东西读出来。localStorage 存的是字符串，
+    // 所以要用 JSON.parse 还原成对象；内容被改坏了就返回 null，不让它把页面弄崩。
+    function readStorage(key) {
+      try {
+        var raw = localStorage.getItem(key);
+        if (!raw) return null;
+        var parsed = JSON.parse(raw);
+        return (parsed && typeof parsed === 'object') ? parsed : null;
+      } catch (err) {
+        console.warn('localStorage 里的 ' + key + ' 读不出来（已忽略，改用默认值）：', err);
+        return null;
+      }
+    }
+
+    // 存回去。手机浏览器的「无痕模式」会禁用 localStorage，
+    // 这时候要提示用户，否则他会以为“保存了但没生效”。
+    function writeStorage(key, value) {
+      try {
+        localStorage.setItem(key, JSON.stringify(value));
+        return true;
+      } catch (err) {
+        console.warn('localStorage 写入失败：', err);
+        return false;
+      }
+    }
+
+    /* 当前的设置。页面加载时先取默认值，
+       紧接着由 loadAdminConfig() 用 localStorage 里的内容覆盖。 */
+    var adminConfig = {
+      apiKey: ADMIN_DEFAULT_CONFIG.apiKey,
+      model: ADMIN_DEFAULT_CONFIG.model,
+      dailyLimit: ADMIN_DEFAULT_CONFIG.dailyLimit
+    };
+
+    // 校验一个上限值是不是合理的正整数；不合理就退回默认值
+    function normalizeLimit(value) {
+      var n = Number(value);
+      if (!isFinite(n) || Math.floor(n) !== n || n < 1) {
+        return ADMIN_DEFAULT_CONFIG.dailyLimit;
+      }
+      return n;
+    }
+
+    // 页面一打开就调用：优先用 localStorage，没有就用默认值
+    function loadAdminConfig() {
+      var saved = readStorage(ADMIN_CONFIG_KEY);
+      if (saved) {
+        adminConfig.apiKey = typeof saved.apiKey === 'string' ? saved.apiKey : ADMIN_DEFAULT_CONFIG.apiKey;
+        adminConfig.dailyLimit = normalizeLimit(saved.dailyLimit);
+        // 模型可能是旧版本存的、已经不在清单里了，这时退回默认模型
+        var known = false;
+        for (var i = 0; i < ADMIN_MODEL_OPTIONS.length; i++) {
+          if (ADMIN_MODEL_OPTIONS[i].value === saved.model) {
+            known = true;
+            break;
+          }
+        }
+        adminConfig.model = known ? saved.model : ADMIN_DEFAULT_CONFIG.model;
+        console.log('管理员设置：已从 localStorage 读取（模型 ' + adminConfig.model +
+                    '，每日上限 ' + adminConfig.dailyLimit + ' 次）');
+      } else {
+        console.log('管理员设置：localStorage 里还没有，使用默认值（模型 ' +
+                    adminConfig.model + '，每日上限 ' + adminConfig.dailyLimit + ' 次）');
+      }
+    }
+
+    /* ---------- 12.3 今日调用次数 ---------- */
+
+    /* 记录长这样：{ date: "2026-09-27", count: 3 }
+       读的时候如果发现 date 不是今天，就当场把它重置成今天、次数归零
+       —— 这就是「每天 0 点自动重置」的实现方式：
+       不靠定时器，而是每次读的时候自己检查一遍日期，更省事也更可靠
+       （页面在后台挂着、电脑睡眠过夜，定时器都可能不准，检查日期永远不会错）。 */
+    function getTodayUsage() {
+      var today = todayString();
+      var usage = readStorage(ADMIN_USAGE_KEY);
+
+      if (!usage || usage.date !== today || typeof usage.count !== 'number' || usage.count < 0) {
+        usage = { date: today, count: 0 };
+        writeStorage(ADMIN_USAGE_KEY, usage);
+      }
+      return usage;
+    }
+
+    // 今天已经用了几次
+    function getUsageCount() {
+      return getTodayUsage().count;
+    }
+
+    // 把次数 +1 并存起来
+    function addUsageCount() {
+      var usage = getTodayUsage();
+      usage.count += 1;
+      writeStorage(ADMIN_USAGE_KEY, usage);
+      return usage.count;
+    }
+
+    /* ★ 每次调用 API 之前的关卡 ★
+       返回 true  = 放行（并且已经把这 1 次记上了）
+       返回 false = 超过上限，已提示拦住，这次请求不要发出去 */
+    function consumeQuotaOrBlock() {
+      var used = getUsageCount();
+      var limit = adminConfig.dailyLimit;
+
+      if (used >= limit) {
+        console.warn('今日调用次数已达上限：' + used + '/' + limit);
+        // 这里用 toast 而不是 alert：纯告知，不该把整个页面卡住。
+        // 句子做短一点，浮在底部才看得清（原来那句换行的说明塞不下）
+        showToast('今日调用次数已达上限（' + used + '/' + limit + ' 次），请明天再试');
+        return false;
+      }
+
+      var now = addUsageCount();
+      // 每 10 次提醒一次快用完了，免得用户毫无预兆地突然被拦住
+      if (now >= limit - 9 && now < limit) {
+        console.log('提示：今日还可以调用 ' + (limit - now) + ' 次');
+      }
+      return true;
+    }
+
+    /* ---------- 12.5 连点标题 5 次 ---------- */
+
+    var titleClickCount = 0;    // 已经连点了几次
+    var titleLastClickAt = 0;   // 上一次点击的时刻（毫秒）
+
+    /* 判定规则：
+         · 两次点击之间隔超过 1 秒 → 前面数的都不算，从这次重新数
+         · 攒够 5 次 → 直接打开设置面板，并立刻清零 */
+    function handleTitleClick() {
+      var now = Date.now();
+      var firstClick = (titleClickCount === 0);
+      var tooSlow = (now - titleLastClickAt) > ADMIN_CLICK_GAP_MS;
+
+      if (firstClick || tooSlow) {
+        titleClickCount = 1;
+      } else {
+        titleClickCount += 1;
+      }
+      titleLastClickAt = now;
+
+      if (titleClickCount >= ADMIN_CLICK_NEEDED) {
+        titleClickCount = 0;      // 数够了就清空，免得下一次点击又凑够
+        titleLastClickAt = 0;
+        openAdminPanel();
+      }
+    }
+
+    /* ---------- 12.6 设置面板 ---------- */
+
+    // 模型下拉框的选项由 JS 生成，这样以后往 ADMIN_MODEL_OPTIONS 里加一项，
+    // HTML 那边一个字都不用改
+    function buildModelOptions() {
+      adminModelSelect.innerHTML = '';
+      for (var i = 0; i < ADMIN_MODEL_OPTIONS.length; i++) {
+        var opt = document.createElement('option');
+        opt.value = ADMIN_MODEL_OPTIONS[i].value;
+        opt.textContent = ADMIN_MODEL_OPTIONS[i].label;
+        adminModelSelect.appendChild(opt);
+      }
+    }
+
+    // 把面板顶部那行「今天已调用 N 次 / 上限 M 次」刷新一下
+    function renderAdminStatus() {
+      var used = getUsageCount();
+      var limit = adminConfig.dailyLimit;
+      var remain = Math.max(0, limit - used);
+
+      var text = '📅 ' + todayString() + '：今日已调用 ' + used + ' 次 / 上限 ' + limit + ' 次（还剩 ' + remain + ' 次）';
+      if (adminConfig.apiKey) {
+        text += '\n🔑 当前使用：设置面板里填的 Key';
+      } else {
+        text += '\n🔑 当前使用：服务器 .env 里的 Key';
+      }
+      adminStatusEl.textContent = text;
+    }
+
+    // 打开设置面板：先把当前设置填进三个输入框，再显示出来
+    function openAdminPanel() {
+      adminApiKeyInput.value = adminConfig.apiKey;
+      adminModelSelect.value = adminConfig.model;
+      adminDailyLimitInput.value = adminConfig.dailyLimit;
+      renderAdminStatus();
+      adminPanelOverlay.hidden = false;
+      adminApiKeyInput.focus();
+    }
+
+    function closeAdminPanel() {
+      adminPanelOverlay.hidden = true;
+    }
+
+    // 【保存】：把三个输入框的内容收起来存进 localStorage
+    function saveAdminConfig() {
+      var limit = Number(adminDailyLimitInput.value.trim());
+
+      // 上限必须是 ≥1 的整数，别的都算不合格
+      if (!isFinite(limit) || Math.floor(limit) !== limit || limit < 1) {
+        showToast('每日调用上限请填 1 以上的整数');
+        adminDailyLimitInput.focus();
+        return;
+      }
+
+      adminConfig.apiKey = adminApiKeyInput.value.trim();
+      adminConfig.model = adminModelSelect.value;
+      adminConfig.dailyLimit = limit;
+
+      var ok = writeStorage(ADMIN_CONFIG_KEY, adminConfig);
+      renderAdminStatus();
+
+      if (ok) {
+        showToast('已保存：模型 ' + adminConfig.model + '，每日上限 ' + adminConfig.dailyLimit + ' 次');
+      } else {
+        showToast('保存失败：这个浏览器可能禁用了本地存储（无痕模式？）。设置只在这次打开期间有效。');
+      }
+    }
+
+    // 【🔄 今日次数清零】
+    function resetTodayUsage() {
+      writeStorage(ADMIN_USAGE_KEY, { date: todayString(), count: 0 });
+      renderAdminStatus();
+      showToast('今日调用次数已清零');
+    }
+
+    /* ---------- 12.7 把管理员的事件连起来 ---------- */
+
+    // ① 连点标题
+    appTitleEl.addEventListener('click', handleTitleClick);
+    // 双击标题会选中文字（蓝色高亮），看着像出 bug，顺手关掉
+    appTitleEl.addEventListener('mousedown', function (event) {
+      if (event.detail > 1) {
+        event.preventDefault();
+      }
+    });
+
+    // ② 设置面板：保存 / 关闭 / 次数清零 / 点空白处
+    adminSaveBtn.addEventListener('click', saveAdminConfig);
+    adminCloseBtn.addEventListener('click', closeAdminPanel);
+    adminResetUsageBtn.addEventListener('click', resetTodayUsage);
+    adminPanelOverlay.addEventListener('click', function (event) {
+      if (event.target === adminPanelOverlay) {
+        closeAdminPanel();
+      }
+    });
+    // 在上限输入框里按回车，等同于点【保存】
+    adminDailyLimitInput.addEventListener('keydown', function (event) {
+      if (event.key === 'Enter') {
+        saveAdminConfig();
+      }
+    });
+
+    // ③ 按 Esc 关掉管理员设置面板
+    document.addEventListener('keydown', function (event) {
+      if (event.key !== 'Escape') return;
+      if (!adminPanelOverlay.hidden) {
+        closeAdminPanel();
+      }
+    });
+
+    /* ============================================================
+       第十六段：备菜清单
+
+       设计上刻意「只读不写」：这个功能从头到尾只往自己的数组里放东西，
+       不去动 recipePool / unseenRecipes / usedRecipes / extraShownRecipes
+       任何一个池子，也不碰 pickNextBatch / showBatch / rankRecipes /
+       filterByStars。所以它加进来之后，去重、轮换、星级、自动匹配、
+       随机寻味的行为全都和之前一模一样。
+
+       两边怎么联系起来的：卡片上那个勾选框只管「勾了没勾」，
+       勾选状态存在这里的一个数组里；卡片重新绘制时（换一批、星级筛选）
+       勾选框会照这个数组把状态画回去，所以换来换去勾选也不会丢。
+       ============================================================ */
+
+    // 清单里的菜，按用户排好的顺序存着
+    var prepList = [];
+    // 对应的菜名标识。用它来判断「这道菜在不在清单里」，
+    // 和轮换算法里的 recipeKey 是同一套规则（菜名去空格）。
+    var prepKeys = [];
+
+    // 一道菜在不在清单里
+    function isInPrepList(recipe) {
+      return prepKeys.indexOf(recipeKey(recipe)) !== -1;
+    }
+
+    /* 勾选框：加在每张菜谱卡片的菜名旁边。
+       把菜名标识挂在 data-recipe-key 上，是为了后面「在面板里删掉一道菜」时，
+       能把主卡片上对应的勾也取消掉 —— 两边的状态要一直是同一个。 */
+    function createPrepCheckbox(recipe) {
+      var label = document.createElement('label');
+      label.className = 'prep-check';
+
+      var box = document.createElement('input');
+      box.type = 'checkbox';
+      box.setAttribute('data-recipe-key', recipeKey(recipe));
+      box.checked = isInPrepList(recipe);
+
+      /* 勾 / 取消勾。只做两件事：改 prepList，然后重画清单面板。
+         不动任何菜谱池子，所以轮换和星级筛选完全不受影响。 */
+      box.addEventListener('change', function () {
+        togglePrepRecipe(recipe, box.checked);
+      });
+
+      var text = document.createElement('span');
+      text.textContent = '加入备菜清单';
+
+      label.appendChild(box);
+      label.appendChild(text);
+      return label;
+    }
+
+    // 把一道菜加进 / 移出清单
+    function togglePrepRecipe(recipe, shouldAdd) {
+      var key = recipeKey(recipe);
+      var at = prepKeys.indexOf(key);
+
+      if (shouldAdd) {
+        if (at === -1) {
+          prepKeys.push(key);
+          prepList.push(recipe);      // 新加的一律排在最后
+        }
+      } else if (at !== -1) {
+        prepKeys.splice(at, 1);
+        prepList.splice(at, 1);
+      }
+
+      renderPrepList();
+       if (prepList.length === 0) {
+        clearAccumulatedExtraIngredients();
+       }
+    }
+
+    // 从面板里点 × 移除一道菜
+    function removePrepRecipe(key) {
+      var at = prepKeys.indexOf(key);
+      if (at === -1) {
+        return;
+      }
+      prepKeys.splice(at, 1);
+      prepList.splice(at, 1);
+      renderPrepList();
+       if (prepList.length === 0) {
+        clearAccumulatedExtraIngredients();
+       }
+      syncPrepCheckboxes();   // 主卡片上的勾也要跟着取消
+    }
+
+    /* 把主卡片上所有勾选框的状态，按当前清单重新刷一遍。
+       什么时候需要：在面板里删掉了一道菜（那个勾选框在别的卡片上，
+       它自己不知道清单变了），以及清空清单的时候。 */
+    function syncPrepCheckboxes() {
+      var boxes = document.querySelectorAll('.prep-check input[data-recipe-key]');
+      for (var i = 0; i < boxes.length; i++) {
+        var key = boxes[i].getAttribute('data-recipe-key');
+        boxes[i].checked = (prepKeys.indexOf(key) !== -1);
+      }
+    }
+
+    // 造一张清单里的紧凑卡片
+    function createPrepItem(recipe, index) {
+      var stars = starsOf(recipe);
+
+      var item = document.createElement('div');
+      item.className = 'prep-item';
+      item.setAttribute('data-recipe-key', recipeKey(recipe));
+      item.setAttribute('data-prep-index', String(index));   // 拖拽时按顺序读它
+
+      // 左边的把手，纯粹是给用户一个「这东西能拖」的暗示
+      var grip = document.createElement('span');
+      grip.className = 'prep-grip';
+      grip.textContent = '⠿';
+      item.appendChild(grip);
+
+      var body = document.createElement('div');
+      body.className = 'prep-body';
+
+      // 第一行：序号 + 菜名
+      var name = document.createElement('div');
+      name.className = 'prep-name';
+      name.textContent = (index + 1) + '. ' + recipe.recipe_name;
+      body.appendChild(name);
+
+      // 第二行：难度星级
+      var meta = document.createElement('div');
+      meta.className = 'prep-meta';
+
+      var starBox = document.createElement('span');
+      starBox.className = 'prep-stars';
+      starBox.title = '难度 ' + stars + '/5（最简单是 1 星）';
+
+      var filled = document.createElement('span');
+      filled.className = 'stars-filled';
+      filled.textContent = repeatChar('★', stars);
+      starBox.appendChild(filled);
+      if (stars < 5) {
+        starBox.appendChild(document.createTextNode(repeatChar('★', 5 - stars)));
+      }
+      meta.appendChild(starBox);
+      body.appendChild(meta);
+
+      // 第三行：基础用料。小字 + 最多两行，保证整张卡够扁
+      var ing = document.createElement('div');
+      ing.className = 'prep-ing';
+      ing.textContent = recipe.ingredients.length > 0
+        ? recipe.ingredients.join('、')
+        : '（见步骤）';
+      body.appendChild(ing);
+
+      item.appendChild(body);
+
+      // 右边的 × 移除按钮
+      var removeBtn = document.createElement('button');
+      removeBtn.className = 'prep-item-remove';
+      removeBtn.type = 'button';
+      removeBtn.textContent = '×';
+      removeBtn.title = '从备菜清单里移除';
+      removeBtn.addEventListener('click', function (event) {
+        // 别让这一下点到卡片上、被拖拽逻辑当成「按住了」
+        event.stopPropagation();
+        removePrepRecipe(recipeKey(recipe));
+      });
+      item.appendChild(removeBtn);
+
+      return item;
+    }
+
+    // 重画整个清单面板
+    function renderPrepList() {
+      prepListEl.innerHTML = '';
+
+      // 一道菜都没勾 → 整块面板收起来，不占屏幕
+      if (prepList.length === 0) {
+        prepPanelEl.hidden = true;
+        prepPanelCountEl.textContent = '';
+        prepListEl.style.maxHeight = '';   // 把上次算的高度清掉
+        return;
+      }
+
+      prepPanelEl.hidden = false;
+      prepPanelCountEl.textContent = '已选 ' + prepList.length + ' 道';
+
+      for (var i = 0; i < prepList.length; i++) {
+        prepListEl.appendChild(createPrepItem(prepList[i], i));
+      }
+
+      updatePrepListMaxHeight();
+    }
+
+    /* 把列表高度限制在「正好装下 3 道菜」。
+       为什么用 JS 算而不是 CSS 写死一个 px：
+       每张卡的高度取决于菜名和用料换不换行，写死了要么留白要么切一半。
+       超过 3 道，多出来的部分就靠 .prep-list 上的 overflow-y:auto 滚动看。 */
+    function updatePrepListMaxHeight() {
+      // 先把上次设的高度清掉，免得测量时内容还被旧的 maxHeight 卡着
+      prepListEl.style.maxHeight = '';
+
+      var items = prepListEl.querySelectorAll('.prep-item');
+      if (items.length === 0) {
+        return;
+      }
+
+      var visibleCount = Math.min(3, items.length);
+      var total = 0;
+      for (var i = 0; i < visibleCount; i++) {
+        var rect = items[i].getBoundingClientRect();
+        var style = window.getComputedStyle(items[i]);
+        total += rect.height + (parseFloat(style.marginBottom) || 0);
+      }
+      total += 16;   // .prep-list 自己的上下 padding（8 + 8）
+
+      /* 再兜一层：面板是固定在屏幕右下角的，如果窗口特别矮
+         （比如小屏笔记本横过来），就按可用空间压一压，
+         免得面板顶出屏幕、连标题都看不见。 */
+      var available = window.innerHeight - 150;
+      prepListEl.style.maxHeight = Math.max(90, Math.min(total, available)) + 'px';
+    }
+
+    // 窗口大小变了就重算一次（换行数变了，卡片高度也会变）
+    window.addEventListener('resize', function () {
+      if (prepList.length > 0) {
+        updatePrepListMaxHeight();
+      }
+    });
+
+    /* ---------- 16.x 长按拖动排序 ----------
+       交互定成「长按 220 毫秒后才可以拖」，而不是按住就拖。
+       原因是：这个列表本身要能滚动，如果一按住就进入拖拽，
+       想上下滚列表时会变成拖着卡片跑，两个手势打架。
+       长按一下再拖，两个手势就分得开了。
+
+       用的是 pointer 事件（pointerdown/move/up），
+       鼠标和触摸屏同一套代码，不用写两份。 */
+    var PREP_LONG_PRESS_MS = 220;   // 按住多久算「长按」
+    var PREP_MOVE_TOLERANCE = 8;    // 长按期间手指/鼠标允许的抖动范围（像素）
+
+    var prepDragKey = null;         // 正在拖的是哪一道菜（菜名标识）
+    var prepPressTimer = null;      // 长按计时的闹钟
+    var prepPressStartY = 0;
+    var prepPressItem = null;       // 按下去的那张卡
+    var prepDragActive = false;     // 是否已经真的进入拖拽状态
+    var prepPointerId = null;       // 按下去那根手指/鼠标的编号，拖拽时要用它做「捕获」
+
+    // 收尾：清计时器、摘标记、把状态复位
+    function endPrepDrag() {
+      if (prepPressTimer !== null) {
+        clearTimeout(prepPressTimer);
+        prepPressTimer = null;
+      }
+      if (prepPressItem) {
+        prepPressItem.classList.remove('prep-dragging');
+        prepPressItem = null;
+      }
+      if (prepDragActive) {
+        document.body.classList.remove('prep-dragging-active');
+        prepListEl.style.touchAction = '';   // 还原，平时还是要能滚列表
+      }
+      prepDragActive = false;
+      prepDragKey = null;
+    }
+
+    /* 根据指针的纵向位置，算出「应该插到第几个位置」。
+       规则：落在某张卡的上半部分 → 插到它前面；下半部分 → 插到它后面。 */
+    function prepIndexFromY(clientY) {
+      var items = prepListEl.querySelectorAll('.prep-item');
+      for (var i = 0; i < items.length; i++) {
+        var rect = items[i].getBoundingClientRect();
+        if (clientY < rect.top + rect.height / 2) {
+          return i;
+        }
+      }
+      return items.length;
+    }
+
+    // 把正在拖的那道菜挪到新的位置
+    function movePrepTo(targetIndex) {
+      var from = prepKeys.indexOf(prepDragKey);
+      if (from === -1) {
+        return;
+      }
+
+      // 先把它从原来的位置摘掉，再插到新位置 ——
+      // 摘掉之后，排在它后面的都会往前挪一格，所以目标位置要相应减一
+      var to = targetIndex;
+      if (to > from) {
+        to -= 1;
+      }
+      if (to === from || to < 0) {
+        return;
+      }
+      if (to > prepKeys.length - 1) {
+        to = prepKeys.length - 1;
+      }
+
+      var movedKey = prepKeys.splice(from, 1)[0];
+      var movedRecipe = prepList.splice(from, 1)[0];
+      prepKeys.splice(to, 0, movedKey);
+      prepList.splice(to, 0, movedRecipe);
+
+      renderPrepList();
+
+      /* 重画之后卡片是新的元素了，把「正在拖」的样式补回去，
+         否则拖到一半卡片会突然不亮了。 */
+      var items = prepListEl.querySelectorAll('.prep-item');
+      for (var i = 0; i < items.length; i++) {
+        if (items[i].getAttribute('data-recipe-key') === prepDragKey) {
+          prepPressItem = items[i];
+          items[i].classList.add('prep-dragging');
+          // 让它跟着手指滚进视野，不然拖到列表边缘就看不见了
+          items[i].scrollIntoView({ block: 'nearest' });
+          break;
+        }
+      }
+    }
+
+    prepListEl.addEventListener('pointerdown', function (event) {
+      // 点在 × 上不进入拖拽流程
+      if (event.target.closest('.prep-item-remove')) {
+        return;
+      }
+
+      var item = event.target.closest('.prep-item');
+      if (!item) {
+        return;
+      }
+
+      prepPressItem = item;
+      prepPressStartY = event.clientY;
+      prepDragKey = item.getAttribute('data-recipe-key');
+      prepPointerId = event.pointerId;
+
+      /* 把这一根手指「捕获」到列表元素上。
+         好处：拖到列表外面（甚至拖出浏览器窗口）时，pointermove / pointerup
+         仍然会送到这个元素上，不会因为指针离开了就突然断掉。 */
+      if (prepListEl.setPointerCapture) {
+        try {
+          prepListEl.setPointerCapture(event.pointerId);
+        } catch (err) {
+          // 少数浏览器在特定情况下会拒绝捕获，不影响主流程，忽略即可
+        }
+      }
+
+      prepPressTimer = setTimeout(function () {
+        prepPressTimer = null;
+        prepDragActive = true;
+        document.body.classList.add('prep-dragging-active');
+        /* 进入拖拽后临时把 touch-action 关掉。
+           手机上这是关键一步：不关的话，手指一滑动浏览器就当成「滚页面」，
+           我们的 pointermove 会被抢走，卡片拖不动。松手后再还原，
+           所以平时照样能正常滚列表。 */
+        prepListEl.style.touchAction = 'none';
+        if (prepPressItem) {
+          prepPressItem.classList.add('prep-dragging');
+        }
+      }, PREP_LONG_PRESS_MS);
+    });
+
+    prepListEl.addEventListener('pointermove', function (event) {
+      // 还没长按成功：如果指针已经移开了一段距离，说明用户是想滚列表，
+      // 不是想拖卡片 —— 把长按取消掉。
+      if (!prepDragActive) {
+        if (prepPressTimer !== null && Math.abs(event.clientY - prepPressStartY) > PREP_MOVE_TOLERANCE) {
+          clearTimeout(prepPressTimer);
+          prepPressTimer = null;
+          prepPressItem = null;
+          prepDragKey = null;
+        }
+        return;
+      }
+
+      // 已经在拖了：别让浏览器同时去滚页面
+      event.preventDefault();
+      movePrepTo(prepIndexFromY(event.clientY));
+    }, { passive: false });   // 因为要 preventDefault，必须显式声明不是 passive
+
+    // 指针松开 / 被系统取消，都要收尾，不能把状态留在半路上
+    prepListEl.addEventListener('pointerup', function (event) {
+      // 松开时把捕获还回去，不然下一根手指的事件会继续送到这儿
+      if (prepPointerId !== null && prepListEl.releasePointerCapture) {
+        try {
+          prepListEl.releasePointerCapture(prepPointerId);
+        } catch (err) {
+          // 没捕获成功过就会抛，忽略
+        }
+      }
+      prepPointerId = null;
+      endPrepDrag();
+    });
+    prepListEl.addEventListener('pointercancel', function (event) {
+      prepPointerId = null;
+      endPrepDrag();
+    });
+
+    /* 指针滑出列表时只取消「还没长按成功」的那次。
+       注意不能在这里无脑 endPrepDrag()：手机上手指很容易滑出列表边缘，
+       那样正在拖的卡片会被突然甩掉。真正在拖的时候靠上面捕获住的
+       pointerup 来收尾，所以这里只处理「按了但还没开始拖」的情况。 */
+    prepListEl.addEventListener('pointerleave', function () {
+      if (prepPressTimer !== null) {
+        clearTimeout(prepPressTimer);
+        prepPressTimer = null;
+        prepPressItem = null;
+        prepDragKey = null;
+      }
+    });
+
+    /* 兜底：万一指针事件在半路上丢了（切标签页、系统弹窗抢焦点），
+       状态会一直卡在「正在拖」。窗口失焦时清一次，避免留下坏状态。 */
+    window.addEventListener('blur', function () {
+      prepPointerId = null;
+      endPrepDrag();
+    });
+
+    /* ---------- 【现在去做菜】按钮：BMI食材计算 + 全屏教程 ---------- */
+
+    // 教程状态：当前在第几道菜，当前到第几步
+    var tutorialState = {
+      currentDishIndex: 0,    // 当前第几道菜（从0开始）
+      currentStepIndex: 0,    // 当前第几步（从0开始）
+      recipesWithSteps: [],   // 带步骤的菜谱数组（从API获取）
+      cookPlan: null,          // 后端本次请求计算出的克数
+      maleCount: 0,           // 男生人数
+      femaleCount: 0,         // 女生人数
+      totalIngredients: 0     // 总食材克数
+    };
+
+    // 点击【现在去做菜】按钮
+    btnCook.addEventListener('click', function () {
+      // 检查是否有备菜清单
+      if (prepList.length === 0) {
+        showToast('请先勾选要做的菜，加入备菜清单');
+        return;
+      }
+
+      // 检查环境
+      if (!checkEnvironment()) {
+        return;
+      }
+
+      // ★ 读取并校验人数输入 ★
+      var maleValue = maleCountInput.value.trim();
+      var femaleValue = femaleCountInput.value.trim();
+
+      // 两个都为空：完全拦截
+      if (maleValue === '' && femaleValue === '') {
+        showToast('请至少填写一项用餐人数');
+
+        // 红框抖动反馈
+        maleCountInput.classList.add('input-error-shake');
+        femaleCountInput.classList.add('input-error-shake');
+
+        // 0.6秒后移除抖动效果
+        setTimeout(function () {
+          maleCountInput.classList.remove('input-error-shake');
+          femaleCountInput.classList.remove('input-error-shake');
+        }, 600);
+
+        return;
+      }
+
+      // 处理默认值逻辑
+      var maleCount = parseInt(maleValue) || 0;
+      var femaleCount = parseInt(femaleValue) || 0;
+
+      // 只改按钮状态：文字变成"生成中…"，并禁用按钮
+      beginBusy(btnCook, '⏳ 生成中…');
+
+      // 构造请求数据
+      var requestData = {
+        action: 'cook',
+        recipes: prepList,
+        maleCount: maleCount,
+        femaleCount: femaleCount
+      };
+
+      // 发送到后端
+      postToBackend(API_CHAT_URL, requestData, CHAT_TIMEOUT)
+        .then(function (data) {
+          if (data && data.content) {
+            // 解析返回的步骤内容
+            var recipesWithSteps = parseCookingPlan(data.content, prepList, data.cookPlan);
+
+            if (recipesWithSteps.length === 0) {
+              showToast('解析执行方案失败，请重试');
+              return;
+            }
+
+            // 初始化教程状态
+            tutorialState.recipesWithSteps = recipesWithSteps;
+            tutorialState.currentDishIndex = 0;
+            tutorialState.currentStepIndex = 0;
+            tutorialState.maleCount = maleCount;
+            tutorialState.femaleCount = femaleCount;
+            tutorialState.cookPlan = data.cookPlan || null;
+            tutorialState.totalIngredients = data.cookPlan ? data.cookPlan.total_ingredients : extractTotalIngredients(data.content);
+
+            // 立刻显示全屏教程（不再有任何延迟或加载遮罩）
+            renderTutorial();
+          } else {
+            showToast('生成教程失败，请重试');
+          }
+        })
+        .catch(function (err) {
+          console.warn('[现在去做菜] 失败：' + describeClientError(err));
+          notifyError(err, '生成教程失败，请重试');
+        })
+        .finally(function () {
+          // 无论成功或失败，都恢复按钮状态
+          endBusy(btnCook, '🍳 现在去做菜');
+        });
+    });
+
+    // 从API返回内容中提取总食材克数
+    function extractTotalIngredients(content) {
+      // 尝试从第一行提取总计XXXXg的数字
+      var lines = content.split('\n');
+      for (var i = 0; i < lines.length; i++) {
+        var line = lines[i].trim();
+        // 匹配"总计XXXXg"或"共XXXXg"等模式
+        var match = line.match(/总计[：:]*\s*(\d+)\s*g|共[：:]*\s*(\d+)\s*g/);
+        if (match) {
+          return parseInt(match[1] || match[2]);
+        }
+      }
+      return 0; // 如果没找到，返回0
+    }
+
+    // 解析API返回的执行方案，提取每道菜的步骤
+    function parseCookingPlan(content, recipes, cookPlan) {
+      var result = [];
+
+      // 简单解析：按菜名分段
+      for (var i = 0; i < recipes.length; i++) {
+        var recipe = recipes[i];
+        var dishName = recipe.recipe_name || ('第' + (i + 1) + '道菜');
+
+        // 从content中找到这道菜的部分
+        var followingDishNames = [];
+        for (var nextIndex = i + 1; nextIndex < recipes.length; nextIndex++) {
+          followingDishNames.push(recipes[nextIndex].recipe_name || ('第' + (nextIndex + 1) + '道菜'));
+        }
+        var planned = cookPlan && Array.isArray(cookPlan.recipes) ? cookPlan.recipes[i] : null;
+        var parsed = extractStepsFromContent(content, dishName, recipe, followingDishNames, planned);
+
+        result.push({
+          dishName: dishName,
+          ingredients: planned && Array.isArray(planned.ingredients) ? planned.ingredients : [],
+          prepSteps: parsed.prepSteps,
+          steps: parsed.cookSteps.length > 0 ? parsed.cookSteps : parsed.prepSteps.concat(parsed.cookSteps)
+        });
+      }
+
+      return result;
+    }
+
+    // 从内容中提取某道菜的步骤
+    function extractStepsFromContent(content, dishName, recipe, followingDishNames, planned) {
+      // 默认步骤：如果API没有返回清晰的步骤，就用原始菜谱的步骤
+      var defaultPrep = [];
+      var defaultCook = [];
+      if (planned && Array.isArray(planned.ingredients) && planned.ingredients.length > 0) {
+        defaultPrep.push('准备并称量：' + planned.ingredients.map(function (item) {
+          return item.name + item.grams + '克';
+        }).join('、') + '。');
+      } else if (recipe.ingredients && recipe.ingredients.length > 0) {
+        defaultPrep.push('准备并称量：' + recipe.ingredients.map(function (item) {
+          return typeof item === 'object' ? (item.name || item.ingredient || '') : item;
+        }).join('、') + '。');
+      }
+      if (Array.isArray(recipe.steps)) defaultCook = recipe.steps.slice();
+      var lines = content.split('\n');
+      var foundDish = false;
+      var section = '';
+      var prepSteps = [];
+      var cookSteps = [];
+      function isDishHeader(lineText, name) {
+        var header = lineText.replace(/^\s*(?:\d+[.、)]\s*)?/, '').replace(/^菜名\s*[：:]\s*/, '');
+        return header.indexOf(name) === 0 && /[：:]/.test(header.substring(name.length));
+      }
+
+      for (var i = 0; i < lines.length; i++) {
+        var line = lines[i].trim();
+        if (!foundDish && isDishHeader(line, dishName)) {
+          foundDish = true;
+          continue;
+        }
+        if (!foundDish) continue;
+        if (line.indexOf('【备菜环节】') !== -1) { section = 'prep'; continue; }
+        if (line.indexOf('【烹饪环节】') !== -1) { section = 'cook'; continue; }
+        if (/【[^】]+】/.test(line)) { section = ''; continue; }
+        var isFollowingDish = false;
+        for (var followingIndex = 0; followingIndex < followingDishNames.length; followingIndex++) {
+          if (isDishHeader(line, followingDishNames[followingIndex])) {
+            isFollowingDish = true;
+            break;
+          }
+        }
+        if (isFollowingDish) break;
+        if (!line || !section) continue;
+        var cleanLine = line.replace(/^(?:步骤\s*)?\d+[.、。)]?\s*/g, '').trim();
+        if (cleanLine.length > 2) (section === 'prep' ? prepSteps : cookSteps).push(cleanLine);
+      }
+      return {
+        prepSteps: prepSteps.length > 0 ? prepSteps : defaultPrep,
+        cookSteps: cookSteps.length > 0 ? cookSteps : defaultCook
+      };
+    }
+
+    // 渲染教程界面
+    function renderTutorial() {
+      // 显示全屏覆盖层
+      tutorialOverlay.hidden = false;
+      tutorialMain.hidden = false;
+
+      var currentRecipe = tutorialState.recipesWithSteps[tutorialState.currentDishIndex];
+      var currentStep = tutorialState.currentStepIndex;
+
+      // 显示菜名
+      tutorialDishName.textContent = currentRecipe.dishName;
+
+      // 清空并重新渲染步骤列表
+      tutorialSteps.innerHTML = '';
+
+      // ★ 第一道菜时，在所有菜谱步骤前显示总览、主食和备菜环节 ★
+      if (tutorialState.currentDishIndex === 0) {
+        var globalInfo = document.createElement('div');
+        globalInfo.className = 'tutorial-global-info';
+        globalInfo.style.fontWeight = 'bold';
+        globalInfo.style.color = '#000';
+        globalInfo.style.marginBottom = '20px';
+        globalInfo.style.padding = '15px';
+        globalInfo.style.backgroundColor = '#f8f9fa';
+        globalInfo.style.borderRadius = '8px';
+        globalInfo.style.lineHeight = '1.8';
+
+        var plannedTotals = tutorialState.cookPlan && Array.isArray(tutorialState.cookPlan.total_ingredients)
+          ? tutorialState.cookPlan.total_ingredients : [];
+        var ingredientList = [];
+        for (var totalIndex = 0; totalIndex < plannedTotals.length; totalIndex++) {
+          var totalItem = plannedTotals[totalIndex];
+          if (totalItem && totalItem.name && Number(totalItem.grams) > 0) {
+            ingredientList.push(totalItem.name + Number(totalItem.grams) + '克');
+          }
+        }
+
+        var totalPeople = tutorialState.cookPlan && Number.isFinite(Number(tutorialState.cookPlan.total_people))
+          ? Number(tutorialState.cookPlan.total_people)
+          : tutorialState.maleCount + tutorialState.femaleCount;
+        var dishCount = tutorialState.cookPlan && Number.isFinite(Number(tutorialState.cookPlan.dish_count))
+          ? Number(tutorialState.cookPlan.dish_count)
+          : tutorialState.recipesWithSteps.length;
+        var infoText = '今日用餐男' + tutorialState.maleCount + '人，女' + tutorialState.femaleCount + '人，共' + totalPeople + '人，' + dishCount + '道菜，建议总备菜为：【' + (ingredientList.length > 0 ? ingredientList.join('，') : '请参考下方各菜详细步骤') + '】';
+
+        globalInfo.textContent = infoText;
+        globalInfo.style.whiteSpace = 'pre-line';
+        tutorialSteps.appendChild(globalInfo);
+
+        var stapleInfo = document.createElement('div');
+        stapleInfo.className = 'tutorial-global-info';
+        stapleInfo.style.fontWeight = '600';
+        stapleInfo.style.marginBottom = '20px';
+        var stapleGrams = tutorialState.cookPlan && Number.isFinite(Number(tutorialState.cookPlan.rice_grams))
+          ? Number(tutorialState.cookPlan.rice_grams) : 0;
+        stapleInfo.textContent = '主食：米饭' + stapleGrams + '克（男生100克/人，女生80克/人），水没过指头半指';
+        tutorialSteps.appendChild(stapleInfo);
+
+        var prepSection = document.createElement('div');
+        prepSection.className = 'tutorial-global-info';
+        prepSection.style.marginBottom = '28px';
+        var prepTitle = document.createElement('div');
+        prepTitle.textContent = '备菜环节';
+        prepTitle.style.fontWeight = '700';
+        prepTitle.style.marginBottom = '8px';
+        prepSection.appendChild(prepTitle);
+        var prepText = document.createElement('div');
+        prepText.textContent = '以下备菜步骤请全部完成后，再开始第一道菜的烹饪。';
+        prepSection.appendChild(prepText);
+        for (var prepRecipeIndex = 0; prepRecipeIndex < tutorialState.recipesWithSteps.length; prepRecipeIndex++) {
+          var prepRecipe = tutorialState.recipesWithSteps[prepRecipeIndex];
+          var prepDish = document.createElement('div');
+          prepDish.style.marginTop = '12px';
+          prepDish.style.fontWeight = '600';
+          prepDish.textContent = prepRecipe.dishName;
+          prepSection.appendChild(prepDish);
+          var prepItems = prepRecipe.prepSteps || [];
+          for (var prepStepIndex = 0; prepStepIndex < prepItems.length; prepStepIndex++) {
+            var prepLine = document.createElement('div');
+            prepLine.textContent = (prepStepIndex + 1) + '. ' + prepItems[prepStepIndex];
+            prepSection.appendChild(prepLine);
+          }
+        }
+        tutorialSteps.appendChild(prepSection);
+      }
+
+      for (var i = 0; i < currentRecipe.steps.length; i++) {
+        var stepDiv = document.createElement('div');
+        stepDiv.className = 'tutorial-step';
+
+        var stepText = document.createElement('span');
+        stepText.className = 'tutorial-step-text';
+        stepText.textContent = (i + 1) + '. ' + currentRecipe.steps[i];
+
+        // 设置样式：当前步骤加粗黑色，已完成的灰色，未到的灰色
+        if (i < currentStep) {
+          stepText.classList.add('done');
+        } else if (i === currentStep) {
+          stepText.classList.add('current');
+        }
+
+        stepDiv.appendChild(stepText);
+
+        // 当前步骤后面加按钮
+        if (i === currentStep) {
+          var stepBtn = document.createElement('button');
+          stepBtn.className = 'btn btn-primary tutorial-step-btn';
+
+          // 判断是否是最后一步
+          if (i === currentRecipe.steps.length - 1) {
+            // 判断是否是最后一道菜
+            if (tutorialState.currentDishIndex === tutorialState.recipesWithSteps.length - 1) {
+              stepBtn.textContent = '✅ 完成所有菜！';
+            } else {
+              stepBtn.textContent = '✅ 我已做完这道菜，现在开始去做下一道菜';
+            }
+          } else {
+            stepBtn.textContent = '✅ 我已做完这一步';
+          }
+
+          stepBtn.addEventListener('click', handleStepComplete);
+          stepDiv.appendChild(stepBtn);
+        }
+
+        tutorialSteps.appendChild(stepDiv);
+      }
+
+      // 更新右下角按钮状态
+      updateTutorialControls();
+    }
+
+    // 处理步骤完成
+    function handleStepComplete() {
+      var currentRecipe = tutorialState.recipesWithSteps[tutorialState.currentDishIndex];
+      var isLastStep = tutorialState.currentStepIndex === currentRecipe.steps.length - 1;
+      var isLastDish = tutorialState.currentDishIndex === tutorialState.recipesWithSteps.length - 1;
+
+      if (isLastStep) {
+        if (isLastDish) {
+          // 完成所有菜：返回主界面，清空备菜清单
+          completeTutorial();
+        } else {
+          // 进入下一道菜
+          tutorialState.currentDishIndex++;
+          tutorialState.currentStepIndex = 0;
+          renderTutorial();
+        }
+      } else {
+        // 进入下一步
+        tutorialState.currentStepIndex++;
+        renderTutorial();
+      }
+    }
+
+    // 完成所有菜
+    function completeTutorial() {
+      // 隐藏教程覆盖层，返回主界面
+      tutorialOverlay.hidden = true;
+
+      // ★ 强硬清空备菜清单数据 ★
+      prepList = [];
+      prepKeys = [];
+      renderPrepList();  // ← 修复：改成正确的函数名
+       clearAccumulatedExtraIngredients();
+
+      // ★ 强硬重置所有菜谱卡片上的勾选框（使用最强硬的选择器）★
+      var allCheckboxes = document.querySelectorAll('.prep-check input[type="checkbox"]');
+      for (var i = 0; i < allCheckboxes.length; i++) {
+        allCheckboxes[i].checked = false;
+      }
+
+      // ★ 额外保险：直接遍历所有带 data-recipe-key 的勾选框 ★
+      var allKeyedCheckboxes = document.querySelectorAll('input[type="checkbox"][data-recipe-key]');
+      for (var j = 0; j < allKeyedCheckboxes.length; j++) {
+        allKeyedCheckboxes[j].checked = false;
+      }
+
+      // ★ 调用同步函数，确保状态一致 ★
+      syncPrepCheckboxes();
+
+      // 显示完成提示
+      showToast('🎉 恭喜！所有菜已完成！');
+    }
+
+    // 更新右下角按钮状态
+    function updateTutorialControls() {
+      // 【返回上一个】：如果是第一道菜的第一步，置灰禁用
+      if (tutorialState.currentDishIndex === 0 && tutorialState.currentStepIndex === 0) {
+        tutorialBtnBack.disabled = true;
+      } else {
+        tutorialBtnBack.disabled = false;
+      }
+    }
+
+    // 【返回上一个】按钮
+    tutorialBtnBack.addEventListener('click', function () {
+      // 返回上一道菜（不是上一步）
+      if (tutorialState.currentDishIndex > 0) {
+        tutorialState.currentDishIndex--;
+        tutorialState.currentStepIndex = 0;
+        renderTutorial();
+      }
+    });
+
+    // 【重做本菜】按钮
+    tutorialBtnReset.addEventListener('click', function () {
+      tutorialState.currentStepIndex = 0;
+      renderTutorial();
+    });
+
+    // 【✅ 完成本道菜】按钮
+    tutorialBtnComplete.addEventListener('click', function () {
+      // 判断是否是最后一道菜
+      if (tutorialState.currentDishIndex >= tutorialState.recipesWithSteps.length - 1) {
+        // 最后一道菜：直接返回主界面，执行和【完成所有菜！】一样的逻辑
+        completeTutorial();
+      } else {
+        // 不是最后一道菜：跳转到下一道菜
+        tutorialState.currentDishIndex++;
+        tutorialState.currentStepIndex = 0;
+        renderTutorial();
+      }
+    });
+
+    // 左上角返回主界面按钮：安全退出教程覆盖层
+    tutorialBackHome.addEventListener('click', function () {
+      completeTutorial();
+    });
+
+    /* ---------- 第十步：把事件和元素连起来 ---------- */
+
+    // 1. 点【➕ 添加】按钮
+    addBtn.addEventListener('click', function () {
+      var ok = addIngredient(inputEl.value);
+      if (ok) {
+        inputEl.value = '';        // 添加成功就把输入框清空
+        inputEl.focus();           // 光标放回输入框，方便连着输下一个
+      }
+    });
+
+    // 2. 在输入框里按回车，等同于点【➕ 添加】
+    inputEl.addEventListener('keydown', function (event) {
+      if (event.key === 'Enter') {
+        addBtn.click();            // 直接借用上面那套逻辑，不用重复写一遍
+      }
+    });
+
+    // 3. 点常用食材标签后面的小「+」
+    //    event.target 是真正被点到的那个元素（可能是「+」，也可能是标签文字）
+    //    closest('.tag') 帮我们往上找到整个标签，这样点到哪里都算数
+    quickTags.addEventListener('click', function (event) {
+      var tag = event.target.closest('.tag');
+      if (!tag) return; // 没点在标签上，忽略
+
+      // 标签的完整文字是“西红柿+”，把最后的「+」去掉才是食材名
+      var name = tag.textContent.replace('+', '').trim();
+      addIngredient(name);
+    });
+
+    // 4. 点【📸 识别食材】
+    //    摄像头还没开 → 先弹自定义说明框，确认后才去申请权限（这是本次改动的重点）
+    //    摄像头已经开着（按钮写着「📸 拍下这张」）→ 不再打扰用户，直接拍
+    recognizeBtn.addEventListener('click', function () {
+      if (cameraStream) {
+        recognizeImage(null);      // 已经开着，直接拍
+      } else {
+        openCameraIntroModal();    // 没开，先问一句
+      }
+    });
+
+    // 5. 点【✨ 匹配菜谱】：先看有没有食材，有就把整个数组交给 matchRecipes()
+    matchBtn.addEventListener('click', function () {
+      /* 没食材一般不给匹配。但勾了「我不知道要吃什么」是例外 ——
+         那种模式本来就允许空着手，让大厨随便推荐几道（见 server.js 里的提示词）。
+         这是「多开一条路」，原来的判断一个字没改。 */
+      if (ingredients.length === 0 && !mysteryCheck.checked) {
+        showToast('请先添加食材');
+        return;
+      }
+
+      /* ★ 点击匹配菜谱时，隐藏右下角宣传卡片 ★ */
+      var promoCard = document.getElementById('promoCard');
+      if (promoCard) {
+        promoCard.classList.add('hidden');
+      }
+
+      /* 用户自己点了按钮，就以他这次为准：
+         把还在倒计时的自动匹配取消掉，也别让它排在当前请求后面。
+         注意 pendingMatchOptions 故意不清 —— 如果这会儿正好有请求在飞，
+         matchRecipes 会把这次点击记进去，等它结束就发，这正是用户想要的。 */
+      cancelAutoMatch();
+      matchRecipes(ingredients.slice());
+    });
+
+    // 6. 点【⛔ 关闭摄像头】：确认后关掉摄像头，页面不刷新，食材列表不动
+    closeCameraBtn.addEventListener('click', function () {
+      stopCamera();
+    });
+
+    // 7. 点【🔄 换一批】：只在已有的菜里轮换，不重新请求接口，所以是瞬时的
+    btnShuffle.addEventListener('click', function () {
+      shuffleRecipes();
+    });
+
+    // 8. 点【🛒 需要额外购买食材解锁更多】：按用户输入的 N 让后端再推荐 3 道
+    btnUnlock.addEventListener('click', function () {
+      unlockMoreRecipes();
+    });
+
+    // 9. 在“想加几道食材”的输入框里按回车，等同于点解锁按钮（省得再去够鼠标）
+    extraCountInput.addEventListener('keydown', function (event) {
+      if (event.key === 'Enter' && !btnUnlock.disabled) {
+        btnUnlock.click();
+      }
+    });
+
+    /* 9.5 【我不知道要吃什么】勾选框跟「解锁区」的联动。
+       勾上随机寻味以后，菜是「随便挑几道」，跟“再买食材解锁更多”是两回事，
+       摆在一起会让人以为要买东西才能用，所以把整块解锁区收起来；
+       取消勾选就原样放出来，恢复正常使用。
+
+       实现上用 hidden 属性而不是直接写 style.display：
+       CSS 里已经有 `.extra-box[hidden] { display: none; }` 这条规则
+       （见「十一、菜谱下方的操作区」那一节），所以只需要切换这个属性，
+       不用把 display 的值到处硬编码，以后改样式也不会漏。 */
+    function syncExtraBoxVisibility() {
+      extraBox.hidden = mysteryCheck.checked;
+    }
+
+    mysteryCheck.addEventListener('change', syncExtraBoxVisibility);
+
+    // 页面刚打开时同步一次。默认是没勾选的，所以这里等于把解锁区放出来 ——
+    // 写这一句是为了以后万一改了默认值（比如给复选框加个 checked），
+    // 显示状态也不会跟勾选状态对不上。
+    syncExtraBoxVisibility();
+
+    /* 10. 食材列表一变，之前算出来的菜谱就未必还合适了（比如把西红柿删了，
+          可菜谱里还有西红柿炒蛋）。
+
+          现在的做法（第 15 段改动）：不再让用户手动点一次【✨ 匹配菜谱】，
+          而是等用户停手 500 毫秒后自动重新匹配一次。具体见下面
+          scheduleAutoMatch() 那一大段注释。
+
+          只在“已经有菜谱结果”的时候才动，避免刚打开页面就闪一下。 */
+    function onIngredientsChanged() {
+      /* 第一件事：把「食材版本号」加一。
+         加和删都会走到这里，所以两个入口都覆盖到了。
+         加在 return 之前，是因为这个号只管「食材变没变」，
+         跟这次要不要自动匹配无关。 */
+      ingredientsEpoch += 1;
+
+      /* 什么时候才值得自动重来：
+           · 右侧现在摆着菜谱（recipePool / extraShownRecipes 非空），或者
+           · 正有一个匹配请求在飞（matchInFlight），或者
+           · 已经有一个自动匹配在倒计时了（autoMatchTimer 不为空）
+
+         后两种都要管：识别食材时会连着加好几个，第一个加进去的时候
+         上一个请求可能还没回来、池子也已经被清空了 ——
+         如果这时直接 return，后面加的食材就全被忽略了。
+         只要「已经开始数秒」，后续变动就继续把它往后推，不会被丢掉。 */
+      var worthAutoMatch = (recipePool.length > 0 || extraShownRecipes.length > 0 ||
+                            matchInFlight || autoMatchTimer !== null);
+
+      if (!worthAutoMatch) {
+        return;   // 还没匹配过（右侧是空的“暂无推荐”），不用自作主张发请求
+      }
+
+      // 旧菜谱立刻作废（这一步和改动前一模一样）
+      clearRecipeViews();
+
+      if (ingredients.length === 0) {
+        // 食材被删光了：没有东西可以推荐，老老实实回到空状态
+        cancelAutoMatch();
+        pendingMatchOptions = null;   // 已经排上队的那次也别发了，没食材可推荐
+        showRecipePlaceholder('暂无推荐，请先添加食材');
+        return;
+      }
+
+      /* 先把旧的菜谱从屏幕上撤掉，再等那 500 毫秒。
+         不这么做的话，食材已经变了、屏幕上海留着旧菜谱，
+         看起来像「改了没反应」。 */
+      showRecipePlaceholder('食材有变动，正在重新匹配…');
+
+      scheduleAutoMatch();
+    }
+
+    /* 把两栏菜谱连同轮换状态一起清空（原来的 onIngredientsChanged 主体） */
+    function clearRecipeViews() {
+      recipePool = [];
+      unseenRecipes = [];
+      usedRecipes = [];
+      extraShownRecipes = [];
+       clearAccumulatedExtraIngredients();
+      extraBatchCount = 0;
+      extraCountInput.value = '';
+      extraStatusEl.hidden = true;
+      extraStatusEl.textContent = '';
+      recipeActionsEl.hidden = true;
+      btnShuffle.hidden = true;
+      extraHint.hidden = true;
+      btnUnlock.disabled = false;
+      extraCountInput.disabled = false;
+
+      // 第二栏也一起收起来
+      extraRecipeListEl.innerHTML = '';
+      extraRecipeSectionEl.hidden = true;
+    }
+
+    /* ---------- 第十五段：食材变动后自动重新匹配 ----------
+
+       三个要点，缺一个都会出问题：
+
+       ① 防抖（500 毫秒）
+          用户连着加 4 个食材，onIngredientsChanged 就会被调用 4 次。
+          每次都发请求的话，4 个请求同时在飞，回来有先有后，
+          最后画到屏幕上的可能是最早那次的结果。所以每次变动都只是
+          「把上次的定时器取消、重新计时」—— 只有用户停手满 500 毫秒
+          那一次才真的发请求。
+
+       ② 不消耗每日额度
+          自动匹配是网页自己发起的，用户根本没点任何按钮。
+          算进「今日调用 N 次」里，用户连着调几次食材就把额度用光了，
+          而且完全不知道次数是怎么没的。所以走 postToBackend 时
+          带上 skipQuota: true。
+
+       ③ 同一时间只允许一个匹配请求在飞
+          用户点了【✨ 匹配菜谱】之后马上又删了个食材，两边的请求就会撞上。
+          这里由 matchRecipes 内部统一处理：谁在飞，后面的就先记成
+          pendingMatchOptions，等前面那个一结束立刻补发最新的一份 ——
+          不硬挤进去，也不会丢掉用户最后的改动。 */
+    var AUTO_MATCH_DEBOUNCE_MS = 500;
+
+    function scheduleAutoMatch() {
+      cancelAutoMatch();   // 先取消上一次的排队，这就是防抖的关键一句
+      autoMatchTimer = setTimeout(function () {
+        autoMatchTimer = null;
+        runAutoMatch();
+      }, AUTO_MATCH_DEBOUNCE_MS);
+    }
+
+    function cancelAutoMatch() {
+      if (autoMatchTimer !== null) {
+        clearTimeout(autoMatchTimer);
+        autoMatchTimer = null;
+      }
+    }
+
+    /* 真正把自动匹配发出去。
+       如果这会儿正好有请求在飞，matchRecipes 会把它记成待办
+       （记的是**当前的食材**，不是发请求那一刻的），等当前请求结束再跑。 */
+    function runAutoMatch() {
+      if (ingredients.length === 0) {
+        return;   // 排队的这段时间里食材被删光了，就别发了
+      }
+      // 不用另外弹提示：按钮上写着「食材变了，重新匹配…」，
+      // 菜谱区也写着「正在为你构思菜谱…」，用户已经知道发生什么了
+      matchRecipes(ingredients.slice(), { auto: true });
+    }
+
+    /* ---------- 第十一步：页面刚打开时先画一次 ----------
+       这样“暂无食材”的提示会正确显示。以后想预置几个食材，
+       只要往上面的 ingredients 数组里加东西就行了 */
+    renderIngredients();
+
+    // 管理员系统也要先初始化一次：
+    //   ① 生成模型下拉框的选项
+    //   ② 读 localStorage 里的设置（没有就用默认值）—— 必须在任何人点按钮之前完成，
+    //      否则第一次调用 API 时用的还是默认上限，而不是管理员设的值
+    buildModelOptions();
+    loadAdminConfig();
+  </script>
+
+</body>
+</html>
